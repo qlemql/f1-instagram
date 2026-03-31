@@ -1,0 +1,105 @@
+{
+  "_comment": "2026 시즌 F1 11개 팀 컬러 정의. 공식 리버리 기반 참조값.",
+  "_updated": "2026-03-29",
+  "teams": {
+    "red_bull": {
+      "name": "Oracle Red Bull Racing",
+      "short_name": "Red Bull",
+      "bg": "#0A0F2C",
+      "accent": "#3671C6",
+      "accent_secondary": "#CC1E4A",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A8B4CC"
+    },
+    "ferrari": {
+      "name": "Scuderia Ferrari HP",
+      "short_name": "Ferrari",
+      "bg": "#1A0000",
+      "accent": "#E8002D",
+      "accent_secondary": "#FFCC00",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#FFAAAA"
+    },
+    "mercedes": {
+      "name": "Mercedes-AMG Petronas F1 Team",
+      "short_name": "Mercedes",
+      "bg": "#0D1A1A",
+      "accent": "#00A19B",
+      "accent_secondary": "#C0C7CA",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#9EC4C3"
+    },
+    "mclaren": {
+      "name": "McLaren Formula 1 Team",
+      "short_name": "McLaren",
+      "bg": "#0F0800",
+      "accent": "#FF8000",
+      "accent_secondary": "#000000",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#FFBB77"
+    },
+    "aston_martin": {
+      "name": "Aston Martin Aramco F1 Team",
+      "short_name": "Aston Martin",
+      "bg": "#001A0F",
+      "accent": "#00594F",
+      "accent_secondary": "#A6E22E",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#80C9A0"
+    },
+    "alpine": {
+      "name": "BWT Alpine Formula One Team",
+      "short_name": "Alpine",
+      "bg": "#00001A",
+      "accent": "#0078C1",
+      "accent_secondary": "#FF69B4",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#99CCFF"
+    },
+    "williams": {
+      "name": "Williams Racing",
+      "short_name": "Williams",
+      "bg": "#00001A",
+      "accent": "#00A0DE",
+      "accent_secondary": "#041E42",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#99DEFF"
+    },
+    "rb": {
+      "name": "Visa Cash App RB Formula One Team",
+      "short_name": "RB",
+      "bg": "#0D0D1A",
+      "accent": "#1434CB",
+      "accent_secondary": "#FFFFFF",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#AAAADD"
+    },
+    "haas": {
+      "name": "MoneyGram Haas F1 Team",
+      "short_name": "Haas",
+      "bg": "#1A0000",
+      "accent": "#E6002B",
+      "accent_secondary": "#FFFFFF",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#FFAAAA"
+    },
+    "sauber_audi": {
+      "name": "Stake F1 Team Kick Sauber / Audi",
+      "short_name": "Audi",
+      "bg": "#0A0A0A",
+      "accent": "#BB0A14",
+      "accent_secondary": "#BBBBBB",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#CCCCCC"
+    },
+    "cadillac": {
+      "name": "Cadillac Formula 1 Team",
+      "short_name": "Cadillac",
+      "bg": "#0A0A0A",
+      "accent": "#A8A9AD",
+      "accent_secondary": "#FFFFFF",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#CCCCCC"
+    }
+  }
+}

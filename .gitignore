@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+output/*.png
+output/*.jpg
+data/raw/*.json
+data/processed/*.json
+logs/*.jsonl
+.DS_Store
+output/
+data/

@@ -1,0 +1,126 @@
+# F1 카드뉴스 자동화 파이프라인
+#
+# [비시즌 비활성화 방법]
+# cron 스케줄을 비활성화하려면 아래 schedule 블록 전체를 주석 처리하세요.
+# workflow_dispatch 는 남겨두면 수동 실행은 여전히 가능합니다.
+#
+# 2026 F1 시즌 GP 일정 (UTC 기준):
+#   Round 01 — 호주 GP       : 2026-03-12 ~ 03-15
+#   Round 02 — 일본 GP       : 2026-03-26 ~ 03-29
+#   Round 03 — 바레인 GP     : 2026-04-16 ~ 04-19
+#   Round 04 — 사우디아라비아 GP : 2026-04-23 ~ 04-26
+#   Round 05 — 마이애미 GP   : 2026-05-07 ~ 05-10
+#   Round 06 — 에밀리아로마냐 GP : 2026-05-21 ~ 05-24
+#   Round 07 — 모나코 GP     : 2026-05-28 ~ 05-31
+#   Round 08 — 스페인 GP     : 2026-06-04 ~ 06-07
+#   Round 09 — 캐나다 GP     : 2026-06-11 ~ 06-14
+#   Round 10 — 오스트리아 GP : 2026-06-25 ~ 06-28
+#   Round 11 — 영국 GP       : 2026-07-02 ~ 07-05
+#   Round 12 — 벨기에 GP     : 2026-07-30 ~ 08-02
+#   Round 13 — 헝가리 GP     : 2026-08-06 ~ 08-09  (← 마지막 하계 GP)
+#   --- 여름 휴식 (2026-08-10 ~ 08-28) ---
+#   Round 14 — 네덜란드 GP   : 2026-08-27 ~ 08-30
+#   Round 15 — 이탈리아 GP   : 2026-09-03 ~ 09-06
+#   Round 16 — 아제르바이잔 GP : 2026-09-17 ~ 09-20
+#   Round 17 — 싱가포르 GP   : 2026-09-24 ~ 09-27
+#   Round 18 — 미국 GP       : 2026-10-15 ~ 10-18  (COTA)
+#   Round 19 — 멕시코시티 GP : 2026-10-22 ~ 10-25
+#   Round 20 — 상파울루 GP   : 2026-10-29 ~ 11-01
+#   Round 21 — 라스베이거스 GP : 2026-11-19 ~ 11-22
+#   Round 22 — 카타르 GP     : 2026-11-26 ~ 11-29
+#   Round 23 — 아부다비 GP   : 2026-12-03 ~ 12-06
+#
+# GP 주간 외 날짜에 실행되면 main.py가 수집 0건으로 자동 종료(exit 0)합니다.
+
+name: F1 카드뉴스 파이프라인
+
+on:
+  # ── 정기 스케줄 ─────────────────────────────────────────────────────────────
+  # 비시즌에 비용 방지: 아래 schedule 블록 전체를 주석 처리하면 cron이 멈춥니다.
+  # workflow_dispatch 는 유지해야 수동 실행이 가능합니다.
+  schedule:
+    # 목~일 UTC 06:00 (한국 15:00) 실행
+    # 기자회견은 보통 목(예선 전) ~ 일(레이스 후) 사이에 공개됨
+    - cron: "0 6 * * 4"  # 목요일
+    - cron: "0 6 * * 5"  # 금요일
+    - cron: "0 6 * * 6"  # 토요일
+    - cron: "0 6 * * 0"  # 일요일
+
+  # ── 수동 실행 ────────────────────────────────────────────────────────────────
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "특정 FIA/F1 URL 수집 (비워두면 자동 탐색)"
+        required: false
+        default: ""
+      dry_run:
+        description: "드라이런 (API 호출 없이 렌더링 테스트)"
+        required: false
+        type: boolean
+        default: false
+      scrape_only:
+        description: "수집만 실행 (AI 처리/렌더링/전송 생략)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  pipeline:
+    name: F1 카드뉴스 생성
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # 비용 방지: 30분 초과 시 강제 종료
+
+    steps:
+      # ── 1. 소스 체크아웃 ────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python 3.12 세팅 ─────────────────────────────────────────────────
+      - name: Python 3.12 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"               # requirements.txt 기반 pip 캐시 자동 관리
+
+      # ── 3. 의존성 설치 ──────────────────────────────────────────────────────
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      # ── 4. 파이프라인 실행 ──────────────────────────────────────────────────
+      # 기자회견이 없는 날: main.py가 0건 수집 후 exit 0으로 정상 종료
+      # 실패 시 재시도 없음 (Claude API 중복 과금 방지)
+      - name: 파이프라인 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # workflow_dispatch 입력값에 따라 옵션 조합
+          ARGS=""
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="--dry-run"
+          else
+            if [ -n "${{ inputs.url }}" ]; then
+              ARGS="$ARGS --url '${{ inputs.url }}'"
+            fi
+            if [ "${{ inputs.scrape_only }}" = "true" ]; then
+              ARGS="$ARGS --scrape-only"
+            fi
+          fi
+
+          echo "실행 명령: python3 main.py $ARGS"
+          eval "python3 main.py $ARGS"
+
+      # ── 5. 생성된 카드 이미지 업로드 ────────────────────────────────────────
+      # 카드가 0장인 날은 output/ 디렉토리가 비어있거나 없을 수 있음 → if-no-files-found: ignore
+      - name: 카드 이미지 artifact 업로드
+        if: always()  # 파이프라인이 성공하든 실패하든 artifact는 수집
+        uses: actions/upload-artifact@v4
+        with:
+          name: f1-cards-${{ github.run_id }}
+          path: |
+            output/**/*.png
+            output/**/*.jpg
+          if-no-files-found: ignore  # 기자회견 없는 날 오류 방지
+          retention-days: 7
