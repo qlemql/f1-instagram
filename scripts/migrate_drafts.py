@@ -36,9 +36,9 @@ _DRAFTS_DIR       = _PROJECT_DIR / "data" / "drafts"
 _BACKUP_DIR       = _DRAFTS_DIR / "backup"
 _MAX_TOTAL_SLIDES = 20   # 커버(1) + 본문 + 출처(1)
 _MAX_BODY_SLIDES  = _MAX_TOTAL_SLIDES - 2  # = 18
-_ANSWER_TARGET    = 100  # 목표 글자 수
-_ANSWER_MIN       = 60   # 최소 (이보다 짧으면 다음 문장까지 포함)
-_ANSWER_MAX       = 150  # 최대 (이보다 길면 강제 분할)
+_ANSWER_TARGET    = 200  # 목표 글자 수
+_ANSWER_MIN       = 80   # 최소 (이보다 짧으면 다음 문장까지 포함)
+_ANSWER_MAX       = 280  # 최대 (이보다 길면 강제 분할)
 
 
 # ── 텍스트 분할 유틸 ──────────────────────────────────────────────────────────
@@ -176,8 +176,8 @@ def _process_slides(raw_slides: list[dict]) -> list[dict]:
     return new_slides
 
 
-_MERGE_MIN = 50   # 이 길이 미만이면 병합 대상
-_MERGE_MAX = 180  # 병합 결과가 이 길이를 초과하면 병합하지 않음
+_MERGE_MIN = 80   # 이 길이 미만이면 병합 대상
+_MERGE_MAX = 280  # 병합 결과가 이 길이를 초과하면 병합하지 않음
 
 
 def _merge_short_answers(slides: list[dict]) -> list[dict]:
