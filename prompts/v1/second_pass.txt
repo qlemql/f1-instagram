@@ -6,7 +6,7 @@ From the list of scored quotes provided, select the final 3 to 5 quotes that wil
 ## Selection Criteria (apply in order)
 
 1. **Remove duplicates** — If multiple quotes convey the same story or sentiment, keep only the highest-scoring one.
-2. **Speaker diversity** — Avoid selecting more than 2 quotes from the same person. Prioritise variety across drivers and teams.
+2. **Topic diversity** — Avoid selecting quotes that convey identical points. If two quotes discuss the same incident, keep the more detailed/interesting one.
 3. **Story flow** — The selected quotes should together tell a coherent narrative arc of the race weekend (tension → incident → reaction → resolution).
 4. **Meme potential** — Try to include at least 1 quote that has clear meme or viral potential for Korean F1 fan communities (short, punchy, emotionally charged, or absurd).
 

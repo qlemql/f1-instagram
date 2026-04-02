@@ -219,6 +219,34 @@ DRIVER_NAME_KR: dict[str, str] = {
     "Gabriel BORTOLETO":  "보톨레토",
 }
 
+# ─────────────────────────────────────────────
+# 4-a-2. 드라이버 한국어 풀네임 표기 (인스타그램 커버 등 전체 이름 필요 시)
+# pipeline.py의 _DRIVER_KO_MAP을 통합 — 단일 소스 관리
+# ─────────────────────────────────────────────
+
+DRIVER_FULLNAME_KR: dict[str, str] = {
+    "Max VERSTAPPEN":     "막스 페르스타펜",
+    "Liam LAWSON":        "리암 로슨",
+    "Charles LECLERC":    "샤를 르클레르",
+    "Lewis HAMILTON":     "루이스 해밀턴",
+    "George RUSSELL":     "조지 러셀",
+    "Kimi ANTONELLI":     "키미 안토넬리",
+    "Lando NORRIS":       "란도 노리스",
+    "Oscar PIASTRI":      "오스카 피아스트리",
+    "Fernando ALONSO":    "페르난도 알론소",
+    "Lance STROLL":       "랜스 스트롤",
+    "Pierre GASLY":       "피에르 가슬리",
+    "Franco COLAPINTO":   "프랑코 콜라핀토",
+    "Carlos SAINZ":       "카를로스 사인츠",
+    "Alexander ALBON":    "알렉산더 알본",
+    "Isack HADJAR":       "이삭 아다르",
+    "Arvid LINDBLAD":     "아르비드 린드블라드",
+    "Esteban OCON":       "에스테반 오콘",
+    "Oliver BEARMAN":     "올리버 베어먼",
+    "Nico HULKENBERG":    "니코 휠켄베르크",
+    "Gabriel BORTOLETO":  "가브리엘 보르톨레토",
+}
+
 
 def get_driver_name_kr(speaker: str) -> str:
     """드라이버 이름(영문)으로 한국어 성 표기를 반환한다.

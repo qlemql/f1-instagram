@@ -95,23 +95,16 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # workflow_dispatch 입력값에 따라 옵션 조합
-          ARGS=""
-
+          # workflow_dispatch 입력값에 따라 명시적 분기 실행 (eval 인젝션 방지)
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            ARGS="--dry-run"
+            python3 main.py --dry-run
+          elif [ "${{ inputs.scrape_only }}" = "true" ]; then
+            python3 main.py --auto --scrape-only
+          elif [ -n "${{ inputs.url }}" ]; then
+            python3 main.py --auto --url "${{ inputs.url }}"
           else
-            ARGS="--auto"
-            if [ -n "${{ inputs.url }}" ]; then
-              ARGS="$ARGS --url '${{ inputs.url }}'"
-            fi
-            if [ "${{ inputs.scrape_only }}" = "true" ]; then
-              ARGS="$ARGS --scrape-only"
-            fi
+            python3 main.py --auto
           fi
-
-          echo "실행 명령: python3 main.py $ARGS"
-          eval "python3 main.py $ARGS"
 
       # ── 5. 생성된 카드 이미지 업로드 ────────────────────────────────────────
       # 카드가 0장인 날은 output/ 디렉토리가 비어있거나 없을 수 있음 → if-no-files-found: ignore

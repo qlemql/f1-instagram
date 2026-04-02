@@ -44,8 +44,9 @@ ALL_NEWS_URL = f"{BASE_URL}/en/latest/all.html"
 
 # press conference/transcript 관련 기사 URL 패턴
 # 예: /en/latest/article/2026-japanese-grand-prix-post-race-press-conference.AbCdEfGhIj1234
+# 검증 결과(2026-03): Contentful ID는 영숫자 10~30자, press-conference 위치는 슬러그 어디에나 올 수 있음
 PRESS_CONF_SLUG_RE = re.compile(
-    r"/en/latest/article/((?:\d{4}-)?[\w-]+-press-conference[\w-]*)\.[A-Za-z0-9]{10,}$"
+    r"/en/latest/article/([\w-]*(?:press-conference|transcript)[\w-]*)\.[A-Za-z0-9]{10,}$"
 )
 
 # 발화자 레이블: "이름 SURNAME: " 또는 "약칭: "
@@ -414,9 +415,14 @@ class F1Scraper:
           - div.article-content
           - div.article-body
           - article 태그
+          - React/Next.js CSS 모듈 기반 ArticleBodyWrapper 패턴
           - 텍스트 밀도 가장 높은 div
+
+        검증 결과 (2026-03): formula1.com은 Next.js + React 기반으로 렌더링되며
+        컴포넌트명 ArticleBodyWrapper, CSS 모듈 클래스 패턴(ModuleName-module_xxx__hash)을 사용.
+        정적 클래스명이 없을 경우 p 태그 밀도 휴리스틱으로 폴백.
         """
-        # 1순위: formula1.com 전용 클래스
+        # 1순위: formula1.com 전용 클래스 (레거시 및 현재)
         for selector in (
             "div.f1-article-content",
             "div.article-content",
@@ -424,6 +430,10 @@ class F1Scraper:
             "div[class*='articleContent']",
             "div[class*='article-content']",
             "div[class*='ArticleContent']",
+            "div[class*='ArticleBody']",
+            "div[class*='article-body']",
+            "div[class*='BodyWrapper']",
+            "div[class*='bodyWrapper']",
         ):
             container = soup.select_one(selector)
             if container and len(container.get_text(strip=True)) > 200:

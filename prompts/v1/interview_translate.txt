@@ -85,6 +85,13 @@ The output will be used verbatim as slide text in an Instagram carousel post tar
 - Do not add commentary, interpretation, or explanations beyond the translation
 - Questions from journalists should be translated concisely; answers should be translated in full without omitting details
 
+## 번역 시 금지 패턴
+- "~했습니다" → "~했어요" 또는 "~했죠" 선호
+- "그것은 ~입니다" → "그게 ~예요" / "그건 ~이에요"
+- "우리는 ~하였습니다" → "우리가 ~했어요" / "저희가 ~했고요"
+- "또한" → "그리고" / "근데" 등 자연스러운 접속사
+- 피동형 과잉 금지: "~되어진다" → "~된다" / "~해요"
+
 ## Input Format
 ```json
 {
@@ -118,7 +125,9 @@ Respond ONLY with valid JSON. No explanation outside the JSON block.
 - Do not add any text before or after the JSON
 - If an answer is empty or missing, use `"a_ko": ""` (empty string)
 
-## Example
+## Examples
+
+### Example 1 — 기본 공격적 주행 발언
 
 Input:
 {
@@ -140,6 +149,62 @@ Output:
     {
       "q_ko": "막스, 1랩에서 매우 공격적이었는데요. 계획했던 건가요?",
       "a_ko": "맞기도 하고 아니기도 해요. 레이스 전에 얘기는 나눴지만, 결국 그 순간 상황에 반응하게 되더라고요. 공간이 보이길래 그냥 들어갔죠. 가끔은 그렇게 해야 할 때가 있어요."
+    }
+  ]
+}
+
+---
+
+### Example 2 — 기술적 발언 (타이어/전략 설명)
+
+Input:
+{
+  "speaker": "Lando Norris",
+  "speaker_ko": "란도 노리스",
+  "event": "2026 Spanish GP – Post-Race",
+  "qa_pairs": [
+    {
+      "q": "Can you explain the tyre strategy? Why did you stay out longer on the medium?",
+      "a": "We saw the degradation was actually quite low, so we decided to extend the stint. The undercut window had already closed for the cars behind, so staying out gave us track position and fresher tyres at the end. It was the right call."
+    }
+  ]
+}
+
+Output:
+{
+  "speaker_ko": "란도 노리스",
+  "translated_qa": [
+    {
+      "q_ko": "타이어 전략에 대해 설명해 주시겠어요? 미디엄으로 왜 그렇게 오래 버텼나요?",
+      "a_ko": "데그러데이션이 생각보다 낮았거든요. 그래서 스틴트를 늘리기로 했어요. 뒤 차들이 언더컷할 수 있는 타이밍도 이미 닫혀 있었고요. 트랙 포지션 지키면서 마지막에 새 타이어로 달릴 수 있었으니까 결국 맞는 판단이었죠."
+    }
+  ]
+}
+
+---
+
+### Example 3 — 감정 발언 (분노/흥분)
+
+Input:
+{
+  "speaker": "Charles Leclerc",
+  "speaker_ko": "샤를 르클레르",
+  "event": "2026 Monaco GP – Post-Race",
+  "qa_pairs": [
+    {
+      "q": "Charles, how do you feel after losing the win in the final lap?",
+      "a": "I'm furious, honestly. We had the pace, we had everything under control, and then it just slipped away. I don't even want to talk about it right now. It hurts."
+    }
+  ]
+}
+
+Output:
+{
+  "speaker_ko": "샤를 르클레르",
+  "translated_qa": [
+    {
+      "q_ko": "샤를, 마지막 랩에서 우승을 놓쳤는데 지금 기분이 어떤가요?",
+      "a_ko": "솔직히 화가 나요. 페이스도 있었고 모든 게 다 잡혀 있었는데, 그냥 날아가버렸잖아요. 지금 당장은 얘기하기도 싫네요. 너무 아프다고요."
     }
   ]
 }

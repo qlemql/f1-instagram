@@ -62,7 +62,7 @@ Input (abridged):
 }
 
 Output:
-{"headline": "피트월 결정이 틀렸다", "char_count": 11, "rationale": "팀 전략 실패를 직접 언급한 가장 강한 발언"}
+{"headline": "피트월 결정이 다 틀렸어", "char_count": 13, "rationale": "팀 전략 실패를 직접 언급한 가장 강한 발언"}
 
 ---
 
@@ -76,4 +76,4 @@ Input (abridged):
 }
 
 Output:
-{"headline": "말로 표현이 안 되는 감정", "char_count": 13, "rationale": "해밀턴 본인의 생생한 감정 표현을 그대로 활용"}
+{"headline": "말로 표현이 안 되는 감정", "char_count": 14, "rationale": "해밀턴 본인의 생생한 감정 표현을 그대로 활용"}

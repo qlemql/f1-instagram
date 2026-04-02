@@ -106,7 +106,7 @@ def render(batches: list[CarouselBatch]) -> list[str]:
                 "car_number": "",
                 "gp_name": carousel.gp_name,
                 "summary": carousel.cover_headline,
-                "interview_texts": [s.text_kr for s in carousel.slides],
+                "slides": [{"text_kr": s.text_kr, "slide_type": s.slide_type} for s in carousel.slides],
                 "date": carousel.date_iso,
                 "source_text": "FIA Official Press Conference",
             }
@@ -126,64 +126,34 @@ def render(batches: list[CarouselBatch]) -> list[str]:
 
 
 def notify(image_paths: list[str], batches: list[CarouselBatch]):
-    """캐러셀 이미지를 텔레그램 채널로 전송한다."""
-    import asyncio
-    from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    """캐러셀 이미지를 텔레그램 채널로 전송한다.
 
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning(
-            "TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가 설정되지 않아 전송을 스킵합니다."
-        )
-        return
+    드라이버별 슬라이드 수에 맞게 image_paths를 분할하여
+    notifier.telegram_bot.send_carousel_set에 위임한다.
+    재시도 로직은 telegram_bot 내부에서 처리된다.
+    """
+    from notifier.telegram_bot import send_carousel_set
 
     if not image_paths:
         logger.warning("전송할 이미지가 없습니다.")
         return
 
-    from telegram import Bot, InputMediaPhoto
+    offset = 0
+    for batch in batches:
+        for carousel in batch.carousels:
+            count = carousel.total_slides
+            chunk = image_paths[offset : offset + count]
+            offset += count
 
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            if not chunk:
+                logger.warning(f"{carousel.speaker_kr}: 이미지 없어 스킵")
+                continue
 
-    async def _send():
-        offset = 0
-        for batch in batches:
-            for carousel in batch.carousels:
-                count = carousel.total_slides
-                chunk = image_paths[offset : offset + count]
-                offset += count
-
-                if not chunk:
-                    logger.warning(f"{carousel.speaker_kr}: 이미지 없어 스킵")
-                    continue
-
-                # 10장씩 분할 전송
-                for i in range(0, len(chunk), 10):
-                    sub = chunk[i:i+10]
-                    media = []
-                    opened = []
-                    for j, f in enumerate(sub):
-                        fp = open(f, "rb")
-                        opened.append(fp)
-                        caption = (
-                            f"{carousel.speaker_kr} 인터뷰 | {batch.gp_name}"
-                            if i == 0 and j == 0 else ""
-                        )
-                        media.append(InputMediaPhoto(media=fp, caption=caption))
-
-                    try:
-                        await bot.send_media_group(
-                            chat_id=TELEGRAM_CHAT_ID, media=media
-                        )
-                        logger.info(
-                            f"전송 완료: {carousel.speaker_kr} ({len(sub)}장)"
-                        )
-                    except Exception as e:
-                        logger.error(f"전송 실패: {carousel.speaker_kr} — {e}")
-                    finally:
-                        for fp in opened:
-                            fp.close()
-
-    asyncio.run(_send())
+            ok = send_carousel_set(chunk, carousel, batch.gp_name)
+            if ok:
+                logger.info(f"전송 완료: {carousel.speaker_kr} ({len(chunk)}장)")
+            else:
+                logger.error(f"전송 실패: {carousel.speaker_kr}")
 
 
 def dry_run():

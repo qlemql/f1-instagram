@@ -33,6 +33,7 @@ from config import HAIKU_MODEL, CONTENT
 from models import (
     CarouselBatch,
     CarouselSet,
+    DRIVER_FULLNAME_KR,
     InterviewSlide,
     MAX_BODY_SLIDES,
     PressConference,
@@ -531,6 +532,15 @@ def _generate_cover_headline(
         rationale = data.get("rationale", "")
         logger.info("[cover_summary] %s: \"%s\" (%d자) — %s",
                     driver, headline, char_count, rationale)
+
+        # 실제 공백 제거 기준 글자 수 검증
+        actual_char_count = len(headline.replace(" ", ""))
+        if actual_char_count < 10 or actual_char_count > 28:
+            logger.warning(
+                "[cover_summary] 헤드라인 글자 수 범위 초과: '%s' (%d자)",
+                headline, actual_char_count,
+            )
+
         return headline
 
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
@@ -801,37 +811,14 @@ def _save_draft(carousel: CarouselSet, gp_slug: str) -> Path:
 # 헬퍼: 드라이버 한국어 이름 조회
 # ──────────────────────────────────────────────
 
-_DRIVER_KO_MAP: dict[str, str] = {
-    "Max VERSTAPPEN": "막스 페르스타펜",
-    "Liam LAWSON": "리암 로슨",
-    "Charles LECLERC": "샤를 르클레르",
-    "Lewis HAMILTON": "루이스 해밀턴",
-    "George RUSSELL": "조지 러셀",
-    "Kimi ANTONELLI": "키미 안토넬리",
-    "Lando NORRIS": "란도 노리스",
-    "Oscar PIASTRI": "오스카 피아스트리",
-    "Fernando ALONSO": "페르난도 알론소",
-    "Lance STROLL": "랜스 스트롤",
-    "Carlos SAINZ": "카를로스 사인츠",
-    "Alexander ALBON": "알렉산더 알본",
-    "Isack HADJAR": "이삭 아다르",
-    "Yuki TSUNODA": "유키 츠노다",
-    "Esteban OCON": "에스테반 오콘",
-    "Oliver BEARMAN": "올리버 베어먼",
-    "Pierre GASLY": "피에르 가슬리",
-    "Jack DOOHAN": "잭 두한",
-    "Nico HULKENBERG": "니코 휠켄베르크",
-    "Gabriel BORTOLETO": "가브리엘 보르톨레토",
-}
-
-
 def _get_driver_ko(speaker: str) -> str:
-    """드라이버 한국어 이름 반환. 매칭 실패 시 원본 반환."""
-    if speaker in _DRIVER_KO_MAP:
-        return _DRIVER_KO_MAP[speaker]
+    """드라이버 한국어 풀네임 반환. models.DRIVER_FULLNAME_KR 단일 소스 사용.
+    매칭 실패 시 원본 반환."""
+    if speaker in DRIVER_FULLNAME_KR:
+        return DRIVER_FULLNAME_KR[speaker]
 
     speaker_upper = speaker.upper()
-    for name, ko in _DRIVER_KO_MAP.items():
+    for name, ko in DRIVER_FULLNAME_KR.items():
         surname = name.split()[-1]
         if surname in speaker_upper:
             return ko
@@ -878,6 +865,11 @@ def _format_gp_display(gp_name: str, date_iso: str) -> str:
     }
 
     kr_name = _GP_KR_MAP.get(gp_name, gp_name)
+
+    # 이미 연도로 시작하는 경우 중복 제거
+    if year and kr_name.startswith(year):
+        kr_name = kr_name[len(year):].strip()
+
     return f"{year} {kr_name}".strip()
 
 
@@ -1061,6 +1053,7 @@ def run_pipeline(
         if not qa_list:
             continue
 
+        cost_before = guard.gp_total
         carousel = _process_driver(
             client=client,
             guard=guard,
@@ -1073,7 +1066,7 @@ def run_pipeline(
         )
 
         if carousel is not None:
-            carousel.total_cost_usd = round(guard.gp_total, 6)
+            carousel.total_cost_usd = round(guard.gp_total - cost_before, 6)
             carousels.append(carousel)
 
     total_cost = guard.gp_total

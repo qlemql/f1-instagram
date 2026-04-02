@@ -1,8 +1,9 @@
 """F1 Instagram 카드뉴스 자동화 — 텔레그램 봇 전송 모듈
 
 공개 함수:
-    send_card_set(image_paths, card_set)  — 카드 이미지 앨범 전송
-    weekly_cost_report()                  — 주간 비용 리포트 텍스트 전송
+    send_card_set(image_paths, card_set)                              — 카드 이미지 앨범 전송 (레거시)
+    send_carousel_set(image_paths, carousel, batch_gp_name)           — CarouselSet 단위 전송 (main.py용)
+    weekly_cost_report()                                              — 주간 비용 리포트 텍스트 전송
 
 텔레그램 제한:
     - 미디어 그룹(앨범)은 최대 10장. 초과 시 여러 그룹으로 분할 전송.
@@ -28,7 +29,7 @@ from telegram import InputMediaPhoto
 from telegram.error import TelegramError
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from models import CardSet
+from models import CarouselSet
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,11 @@ def _chunk_list(lst: list, size: int) -> list[list]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
-def _build_caption(card_set: CardSet, card_index: int, total: int) -> str:
-    """카드 캡션 포맷: "{gp_name} {conference_type}\n카드 {n}/{total}"."""
+def _build_caption(carousel: CarouselSet, card_index: int, total: int) -> str:
+    """카드 캡션 포맷: "{speaker_kr} 인터뷰 | {gp_name}\n{card_index}/{total}"."""
     return (
-        f"{card_set.gp_name} {card_set.conference_type}\n"
-        f"카드 {card_index}/{total}"
+        f"{carousel.speaker_kr} 인터뷰 | {carousel.gp_name}\n"
+        f"{card_index}/{total}"
     )
 
 
@@ -283,20 +284,20 @@ def _build_weekly_report_text(entries: list[dict]) -> str:
 # 공개 API
 # ---------------------------------------------------------------------------
 
-def send_card_set(image_paths: Sequence[str], card_set: CardSet) -> bool:
+def send_card_set(image_paths: Sequence[str], carousel: CarouselSet) -> bool:
     """
     카드 이미지들을 텔레그램 채널에 미디어 그룹(앨범)으로 전송한다.
 
     10장 초과 시 10장씩 청크로 분할하여 순서대로 전송한다.
     각 청크의 첫 번째 이미지에만 캡션을 붙인다.
 
-    캡션 포맷: "{gp_name} {conference_type}\\n카드 {n}/{total}"
+    캡션 포맷: "{speaker_kr} 인터뷰 | {gp_name}\\n{n}/{total}"
     - n: 청크 내 첫 번째 카드의 전체 인덱스
     - total: 전체 카드 수
 
     Args:
         image_paths: 전송할 이미지 파일 절대 경로 목록
-        card_set:    해당 이미지들의 메타데이터 (gp_name, conference_type 등)
+        carousel:    CarouselSet 메타데이터 (speaker_kr, gp_name 등)
 
     Returns:
         True: 모든 청크 전송 성공, False: 하나 이상 실패
@@ -313,7 +314,7 @@ def send_card_set(image_paths: Sequence[str], card_set: CardSet) -> bool:
     chunks = _chunk_list(paths, _TELEGRAM_ALBUM_LIMIT)
     logger.info(
         f"텔레그램 전송 시작: {total}장 → {len(chunks)}개 청크 "
-        f"({card_set.gp_name} / {card_set.conference_type})"
+        f"({carousel.speaker_kr} / {carousel.gp_name})"
     )
 
     all_success = True
@@ -324,7 +325,7 @@ def send_card_set(image_paths: Sequence[str], card_set: CardSet) -> bool:
         card_index = 1  # 전체 기준 카드 번호 (1부터 시작)
 
         for chunk_no, chunk in enumerate(chunks, start=1):
-            caption = _build_caption(card_set, card_index, total)
+            caption = _build_caption(carousel, card_index, total)
             logger.info(
                 f"청크 {chunk_no}/{len(chunks)} 전송 중: "
                 f"{len(chunk)}장 (캡션: {caption!r})"
@@ -353,6 +354,41 @@ def send_card_set(image_paths: Sequence[str], card_set: CardSet) -> bool:
         logger.error(f"텔레그램 전송 부분 실패: 일부 청크가 전송되지 않았습니다.")
 
     return all_success
+
+
+def send_carousel_set(
+    image_paths: list[str],
+    carousel: CarouselSet,
+    batch_gp_name: str,
+) -> bool:
+    """
+    드라이버 1명의 캐러셀 이미지를 텔레그램 채널에 전송한다.
+
+    main.py의 notify() 함수에서 호출하는 공개 인터페이스.
+    재시도 로직은 내부 _send_album_async에서 처리된다.
+
+    Args:
+        image_paths:   전송할 이미지 파일 절대 경로 목록
+        carousel:      CarouselSet 메타데이터
+        batch_gp_name: 배치 단위 GP명 (로그용, carousel.gp_name과 동일할 수 있음)
+
+    Returns:
+        True: 모든 청크 전송 성공, False: 하나 이상 실패
+    """
+    if not _check_credentials():
+        return False
+
+    if not image_paths:
+        logger.warning(
+            f"{carousel.speaker_kr}: 전송할 이미지가 없습니다. 스킵합니다."
+        )
+        return True
+
+    logger.info(
+        f"[send_carousel_set] {carousel.speaker_kr} ({batch_gp_name}): "
+        f"{len(image_paths)}장 전송 시작"
+    )
+    return send_card_set(image_paths, carousel)
 
 
 def weekly_cost_report() -> bool:

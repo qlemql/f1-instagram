@@ -394,11 +394,19 @@ def render_cover(
         width=2,
     )
 
+    # ── 스와이프 유도 텍스트 y좌표 미리 계산 (오버플로 방어용) ─────────────
+    swipe_font = _font("pretendard_medium", 26)
+    swipe_text = "인터뷰 전문 →"
+    swipe_bbox = draw.textbbox((0, 0), swipe_text, font=swipe_font)
+    swipe_h    = swipe_bbox[3] - swipe_bbox[1]
+    # 하단 바(ACCENT_H) + 여백 20px 위에 딱 붙임
+    swipe_y    = H - ACCENT_H - swipe_h - 20
+
     # ── 핵심 요약 (큰 한 줄, 따옴표 없이 텍스트만) ──────────────────────────
     if summary:
         # 따옴표 문자 제거 후 출력
         summary_clean = summary.strip().strip('"').strip("'").strip('\u201c').strip('\u201d')
-        sum_font, _ = _fit_font(
+        sum_font, sum_size = _fit_font(
             draw, "pretendard_bold", summary_clean,
             max_width=CONTENT_W,
             max_height=220,
@@ -407,7 +415,7 @@ def render_cover(
             line_spacing=16,
         )
         sum_y = divider_y + 32
-        _draw_multiline(
+        sum_end_y = _draw_multiline(
             draw, summary_clean, sum_font,
             x=PAD_H, y=sum_y,
             max_width=CONTENT_W,
@@ -416,13 +424,30 @@ def render_cover(
             align="left",
         )
 
-    # ── 스와이프 유도 텍스트 (하단 바 바로 위에 붙임) ───────────────────────
-    swipe_font = _font("pretendard_medium", 26)
-    swipe_text = "인터뷰 전문 →"
-    swipe_bbox = draw.textbbox((0, 0), swipe_text, font=swipe_font)
-    swipe_h    = swipe_bbox[3] - swipe_bbox[1]
-    # 하단 바(ACCENT_H) + 여백 20px 위에 딱 붙임
-    swipe_y    = H - ACCENT_H - swipe_h - 20
+        # 요약 렌더링 후 y좌표가 스와이프 텍스트에 근접하면 폰트 축소 후 재렌더링
+        if sum_end_y + 40 > swipe_y:
+            reduced_size = max(sum_size - 8, 22)
+            sum_font, _ = _fit_font(
+                draw, "pretendard_bold", summary_clean,
+                max_width=CONTENT_W,
+                max_height=swipe_y - sum_y - 40,
+                start_size=reduced_size,
+                min_size=22,
+                line_spacing=14,
+            )
+            # 배경 패치로 이전 텍스트 덮기
+            draw.rectangle(
+                [(PAD_H - 4, sum_y - 4), (PAD_H + CONTENT_W + 4, swipe_y - 2)],
+                fill=(*top_color, 255),
+            )
+            _draw_multiline(
+                draw, summary_clean, sum_font,
+                x=PAD_H, y=sum_y,
+                max_width=CONTENT_W,
+                fill=(255, 255, 255, 240),
+                line_spacing=14,
+                align="left",
+            )
     draw.text(
         (PAD_H, swipe_y),
         swipe_text,
@@ -518,6 +543,7 @@ def render_interview_slide(
     )
 
     # dot 인디케이터: ●●○○○ (현재 슬라이드 = 채움, 나머지 = 빈 원)
+    # 10장 초과 시 "현재/전체" 숫자 표기로 전환 (넘침 방지)
     # page_num: 커버=1, 본문 시작=2 / total_pages: 커버+본문+출처
     dot_filled   = "\u25cf"   # ●
     dot_empty    = "\u25cb"   # ○
@@ -525,11 +551,14 @@ def render_interview_slide(
     # 본문 슬라이드 수 = total_pages - 2 (커버, 출처 제외)
     body_count   = total_pages - 2
     current_body = page_num - 1   # 본문 1번째 = 1
-    dots = ""
-    for i in range(1, body_count + 1):
-        dots += dot_filled if i == current_body else dot_empty
-        if i < body_count:
-            dots += " "
+    if body_count > 10:
+        dots = f"{current_body}/{body_count}"
+    else:
+        dots = ""
+        for i in range(1, body_count + 1):
+            dots += dot_filled if i == current_body else dot_empty
+            if i < body_count:
+                dots += " "
     dot_bbox = draw.textbbox((0, 0), dots, font=dot_font)
     dot_w    = dot_bbox[2] - dot_bbox[0]
     dot_h    = dot_bbox[3] - dot_bbox[1]
@@ -640,7 +669,8 @@ def render_question_slide(
     accent_sec = hex_to_rgb(tc.get("accent_secondary", tc["accent"]))
 
     # ── 배경: accent 색상을 어둡게 한 그라데이션 ─────────────────────────────
-    bg_base = darken_color(accent_rgb, 0.55)
+    # darken 비율 0.30 (기존 0.55보다 밝아져 Q슬라이드 시각적 차별화 강화)
+    bg_base = darken_color(accent_rgb, 0.30)
     top_color = darken_color(bg_base, 0.10)
     bottom_color = lighten_color(bg_base, 0.08)
     img = make_vertical_gradient(W, H, top_color, bottom_color).convert("RGBA")
@@ -650,8 +680,8 @@ def render_question_slide(
 
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # ── 상단 accent 바 (밝은 accent 원색) ────────────────────────────────────
-    _draw_team_bar(draw, accent_rgb, position="top", height=8)
+    # ── 상단 accent 바: Q슬라이드는 12px (A슬라이드 6px보다 두꺼워 시각 차별화) ──
+    _draw_team_bar(draw, accent_rgb, position="top", height=12)
 
     # ── 배경 장식: 초대형 반투명 "Q" (우측 하단에 깔리는 레이어) ────────────
     q_bg_font = _font("bebas_neue", 600)
@@ -730,17 +760,20 @@ def render_question_slide(
         fill=(255, 255, 255, 180),
     )
 
-    # dot 인디케이터
+    # dot 인디케이터 (10장 초과 시 숫자 표기로 전환)
     dot_filled = "\u25cf"
     dot_empty  = "\u25cb"
     dot_font   = _font("pretendard_regular", 18)
     body_count = total_pages - 2
     current_body = page_num - 1
-    dots = ""
-    for i in range(1, body_count + 1):
-        dots += dot_filled if i == current_body else dot_empty
-        if i < body_count:
-            dots += " "
+    if body_count > 10:
+        dots = f"{current_body}/{body_count}"
+    else:
+        dots = ""
+        for i in range(1, body_count + 1):
+            dots += dot_filled if i == current_body else dot_empty
+            if i < body_count:
+                dots += " "
     dot_bbox = draw.textbbox((0, 0), dots, font=dot_font)
     dot_w = dot_bbox[2] - dot_bbox[0]
     name_bbox = draw.textbbox((0, 0), driver_kr, font=driver_font)
@@ -754,8 +787,8 @@ def render_question_slide(
         fill=(255, 255, 255, 160),
     )
 
-    # ── 하단 accent 바 ───────────────────────────────────────────────────────
-    _draw_team_bar(draw, accent_rgb, position="bottom", height=8)
+    # ── 하단 accent 바: Q슬라이드는 12px ────────────────────────────────────
+    _draw_team_bar(draw, accent_rgb, position="bottom", height=12)
 
     return img.convert("RGBA")
 
@@ -833,17 +866,20 @@ def render_answer_slide(
         fill=(*text_sec, 180),
     )
 
-    # dot 인디케이터
+    # dot 인디케이터 (10장 초과 시 숫자 표기로 전환)
     dot_filled   = "\u25cf"
     dot_empty    = "\u25cb"
     dot_font     = _font("pretendard_regular", 18)
     body_count   = total_pages - 2
     current_body = page_num - 1
-    dots = ""
-    for i in range(1, body_count + 1):
-        dots += dot_filled if i == current_body else dot_empty
-        if i < body_count:
-            dots += " "
+    if body_count > 10:
+        dots = f"{current_body}/{body_count}"
+    else:
+        dots = ""
+        for i in range(1, body_count + 1):
+            dots += dot_filled if i == current_body else dot_empty
+            if i < body_count:
+                dots += " "
     dot_bbox = draw.textbbox((0, 0), dots, font=dot_font)
     dot_w    = dot_bbox[2] - dot_bbox[0]
     dot_h    = dot_bbox[3] - dot_bbox[1]
@@ -1015,8 +1051,15 @@ def render_source(
         for ln in src_lines
     )
 
-    # 3) GP명 높이
-    gp_font    = _font("pretendard_bold", 52)
+    # 3) GP명 높이 — _fit_font로 자동 크기 조정 (긴 GP명 넘침 방지)
+    gp_font, _ = _fit_font(
+        draw, "pretendard_bold", gp_name,
+        max_width=CONTENT_W,
+        max_height=80,
+        start_size=52,
+        min_size=34,
+        line_spacing=8,
+    )
     gp_bbox    = draw.textbbox((0, 0), gp_name, font=gp_font)
     gp_h       = gp_bbox[3] - gp_bbox[1]
 
@@ -1068,7 +1111,7 @@ def render_source(
     )
     cy += BLOCK_GAP
 
-    # GP 이름 (52px)
+    # GP 이름 (자동 크기: 52px 시작, 최소 34px)
     gp_w = gp_bbox[2] - gp_bbox[0]
     draw.text(
         ((W - gp_w) // 2, cy),
