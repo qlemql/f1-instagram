@@ -1,15 +1,21 @@
-"""F1 Instagram 카드뉴스 자동화 — 3단계 AI 선별 파이프라인
+"""F1 Instagram 캐러셀 자동화 — 인터뷰 번역 파이프라인
 
 흐름:
-  1. 드라이버 발언 추출 (질문 제외)
-  2. 1차 선별: Haiku로 각 발언 점수 채점 (배치, 5~6개씩)
-  3. 7점 이상 필터
-  4. 2차 선별: Haiku로 최종 3~5개 선정 (1회 호출)
-  5. 3차 검토: Sonnet 조건부 — 점수 분산 ≥ 4, 선정 수 < 1, 밈 후보 ≥ 2
-  6. 번역: Haiku로 한국어 번역 (배치)
-  7. 요약: Haiku로 메인/서브 카피 생성 (배치)
-  8. 밈 판단: card_type == "meme"인 카드 Sonnet으로 최종 확인
-  9. CardSet 반환
+  1. 드라이버 발언 추출 (질문 포함 — Q&A 재구성에 사용)
+  2. 1차 선별 (Haiku): 드라이버별 답변 점수 채점 (배치, 5개씩)
+  3. 2차 선별 (Haiku): 드라이버별 핵심 답변 3~5개 선정 (드라이버당 1회 호출)
+  4. 번역 (Haiku): 선정된 Q&A 전문 번역
+  5. 커버 요약 (Haiku): 번역된 내용 기반 한 줄 헤드라인 생성
+  6. 슬라이드 분할: 번역 텍스트를 ~180자씩 슬라이드로 코드 분할
+  7. 중간 결과 저장: data/drafts/{gp}_{driver}.json
+  8. CarouselBatch 반환
+
+설계 원칙:
+  - 1게시물 = 1드라이버 (드라이버별 독립 CarouselSet)
+  - 번역은 전문 번역 (압축 금지)
+  - 슬라이드 분할은 AI가 아닌 코드로 처리 (비용 절약)
+  - 18장(커버1 + 본문17 + 출처1) 초과 시 경고 로그
+  - Haiku 우선, CostGuard 연동
 """
 
 from __future__ import annotations
@@ -17,20 +23,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-import statistics
+import textwrap
 from pathlib import Path
 from typing import Optional
 
 from anthropic import Anthropic
 
-from config import HAIKU_MODEL, SONNET_MODEL, CONTENT
+from config import HAIKU_MODEL, CONTENT
 from models import (
-    CardContent,
-    CardSet,
+    CarouselBatch,
+    CarouselSet,
+    InterviewSlide,
+    MAX_BODY_SLIDES,
     PressConference,
     ScoredStatement,
     SelectedQuote,
-    TranslatedQuote,
     get_team_for_driver,
 )
 from processor.cost_guard import CostGuard
@@ -40,12 +47,24 @@ logger = logging.getLogger(__name__)
 # 프롬프트 디렉토리
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts" / "v1"
 
+# 드래프트 저장 디렉토리
+_DRAFT_DIR = Path(__file__).resolve().parent.parent / "data" / "drafts"
+
 # CostGuard에서 사용하는 모델 식별자 (버전 없는 short name)
-_HAIKU_GUARD  = "claude-haiku-4-5"
-_SONNET_GUARD = "claude-sonnet-4-6"
+_HAIKU_GUARD = "claude-haiku-4-5"
 
 # 1차 선별 배치 크기
 _FIRST_PASS_BATCH_SIZE = 5
+
+# 슬라이드 분할: 문단 단위 우선, 최대 글자 수
+_SLIDE_TARGET_CHARS = 180
+_SLIDE_MAX_CHARS = 210
+
+# Q/A 분리 슬라이드: 답변 분할 글자 수
+_ANSWER_TARGET_CHARS = 120
+_ANSWER_MAX_CHARS = 150
+_ANSWER_MIN_CHARS = 30   # 이보다 짧으면 이전 슬라이드에 합침
+_MAX_TOTAL_SLIDES = 20   # 커버(1) + Q/A 본문 + 출처(1) 합계 최대
 
 
 # ──────────────────────────────────────────────
@@ -63,12 +82,10 @@ def _extract_json(text: str) -> str:
     Claude 응답에서 JSON 블록을 추출한다.
     ```json ... ``` 펜스가 있으면 내부만, 없으면 전체 텍스트를 시도한다.
     """
-    # 코드 펜스 우선 추출
     m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\}|\[[\s\S]*?\])\s*```", text, re.DOTALL)
     if m:
         return m.group(1).strip()
 
-    # 코드 펜스 없이 JSON 오브젝트/배열 직접 탐색
     m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text, re.DOTALL)
     if m:
         return m.group(1).strip()
@@ -89,7 +106,7 @@ def _call_api(
 ) -> Optional[str]:
     """
     Claude API를 호출하고 비용을 기록한다.
-    실패 시 None을 반환한다 (호출부에서 스킵 처리).
+    실패 시 None을 반환한다.
     """
     try:
         response = client.messages.create(
@@ -116,57 +133,158 @@ def _call_api(
 
 
 # ──────────────────────────────────────────────
-# 단계 1: 드라이버 발언 추출
+# 약칭 → 풀네임 변환
 # ──────────────────────────────────────────────
 
-def _extract_driver_statements(conference: PressConference) -> list:
-    """is_question=False 인 발언만 반환한다."""
-    return conference.driver_statements()
+def _build_abbr_map(participants: list[str]) -> dict[str, str]:
+    """
+    participants 풀네임 목록에서 약칭→풀네임 매핑을 생성한다.
+
+    FIA 기자회견에서 동일 화자가 처음엔 "이름 SURNAME:" 형태로 등장하고
+    이후 "이니셜(예: KA, OP, CL):" 약칭으로 전환되는 패턴을 처리한다.
+
+    매핑 전략:
+      1. 풀네임의 이름(first name) 첫 글자 + 성(last name) 첫 글자 → 2글자 이니셜
+         예: "Kimi ANTONELLI" → "KA"
+      2. 성(last name) 첫 2글자 → 2글자 약칭
+         예: "Charles LECLERC" → "CL"
+      3. 이름(first name) 첫 글자 + 성(last name) 첫 2글자 → 3글자
+         예: "Oscar PIASTRI" → "OPI" (충돌 방지용)
+
+    충돌 시 먼저 등록된 항목을 우선한다.
+    """
+    abbr_map: dict[str, str] = {}
+
+    for fullname in participants:
+        parts = fullname.split()
+        if len(parts) < 2:
+            continue
+
+        first = parts[0]
+        last = parts[-1]
+
+        candidates = [
+            (first[0] + last[0]).upper(),
+            (first[0] + last[:2]).upper(),
+            last[:2].upper(),
+            last[:3].upper(),
+        ]
+
+        for abbr in candidates:
+            if abbr not in abbr_map:
+                abbr_map[abbr] = fullname
+
+    return abbr_map
+
+
+def _resolve_speaker(speaker: str, abbr_map: dict[str, str]) -> str:
+    """약칭이면 풀네임으로 변환한다."""
+    if re.match(r"^[A-Z]{1,4}$", speaker):
+        resolved = abbr_map.get(speaker)
+        if resolved:
+            logger.debug("[speaker] 약칭 변환: %s → %s", speaker, resolved)
+            return resolved
+        else:
+            logger.warning("[speaker] 약칭 '%s' 매핑 실패 (participants에 없음)", speaker)
+    return speaker
+
+
+def _normalize_conference_speakers(conference: PressConference) -> PressConference:
+    """PressConference의 모든 Statement에서 약칭 speaker를 풀네임으로 교체한다."""
+    abbr_map = _build_abbr_map(conference.participants)
+    if not abbr_map:
+        return conference
+
+    logger.debug("[speaker] 약칭 매핑 테이블: %s", abbr_map)
+
+    for stmt in conference.statements:
+        if not stmt.is_question:
+            original = stmt.speaker
+            stmt.speaker = _resolve_speaker(original, abbr_map)
+
+    return conference
 
 
 # ──────────────────────────────────────────────
-# 단계 2: 1차 선별 — 점수 채점 (배치)
+# 단계 1: 드라이버별 Q&A 재구성
 # ──────────────────────────────────────────────
 
-def _first_pass_batch(
+def _group_qa_by_driver(conference: PressConference) -> dict[str, list[dict]]:
+    """
+    statements를 드라이버별로 Q&A 쌍으로 재구성한다.
+
+    FIA 기자회견 텍스트에서 질문(is_question=True) 바로 다음에 오는
+    드라이버 답변(is_question=False)을 Q&A 쌍으로 묶는다.
+
+    반환: {speaker: [{"seq": int, "q": str, "a": str}, ...]}
+    """
+    qa_by_driver: dict[str, list[dict]] = {}
+
+    stmts = conference.statements
+    for i, stmt in enumerate(stmts):
+        if stmt.is_question:
+            continue
+
+        # 이 답변 앞에 있는 가장 가까운 질문 찾기
+        question_text = ""
+        for j in range(i - 1, -1, -1):
+            if stmts[j].is_question:
+                question_text = stmts[j].text
+                break
+            elif not stmts[j].is_question:
+                # 다른 드라이버의 답변이 먼저 나오면 질문 없이 연속 답변
+                break
+
+        speaker = stmt.speaker
+        if speaker not in qa_by_driver:
+            qa_by_driver[speaker] = []
+
+        qa_by_driver[speaker].append({
+            "seq": stmt.seq,
+            "q": question_text,
+            "a": stmt.text,
+        })
+
+    return qa_by_driver
+
+
+# ──────────────────────────────────────────────
+# 단계 2: 1차 선별 — 발언 점수 채점 (배치)
+# ──────────────────────────────────────────────
+
+def _first_pass_driver(
     client: Anthropic,
     guard: CostGuard,
-    statements: list,
+    driver: str,
+    qa_list: list[dict],
     event_label: str,
     system_prompt: str,
 ) -> list[ScoredStatement]:
     """
-    발언 목록을 _FIRST_PASS_BATCH_SIZE 단위로 묶어 Haiku에 점수를 요청한다.
-    발언마다 개별 JSON을 반환받는 방식이므로, 배치 내 각 발언에 순차 호출한다.
-
-    비용 최적화: 배치 단위로 system prompt를 재사용하고,
-    user message를 여러 발언이 포함된 단일 요청으로 묶는다.
-    단, 현재 first_pass.txt 프롬프트는 발언 1개 기준이므로
-    배치 호출은 "묶어서 한 번에 요청 + 배열 응답" 방식으로 처리한다.
+    드라이버 1명의 답변 목록을 배치로 채점한다.
     """
     scored: list[ScoredStatement] = []
 
-    # 배치 단위로 분할
-    for batch_start in range(0, len(statements), _FIRST_PASS_BATCH_SIZE):
-        batch = statements[batch_start: batch_start + _FIRST_PASS_BATCH_SIZE]
+    for batch_start in range(0, len(qa_list), _FIRST_PASS_BATCH_SIZE):
+        batch = qa_list[batch_start: batch_start + _FIRST_PASS_BATCH_SIZE]
 
-        # 배치를 JSON 배열로 구성
         items = []
-        for stmt in batch:
+        for qa in batch:
             items.append({
-                "id": f"q{stmt.seq}",
-                "speaker": stmt.speaker,
+                "id": f"q{qa['seq']}",
+                "speaker": driver,
                 "event": event_label,
-                "quote": stmt.text,
+                "question": qa["q"],
+                "answer": qa["a"],
             })
 
-        # 배치 전용 user message: 여러 발언을 한 번에 채점 요청
         user_msg = (
-            "Score each of the following quotes individually.\n"
+            "Score each of the following F1 press conference answers individually.\n"
             "Return a JSON array where each element has: "
-            "{\"id\": \"<id>\", \"score\": <0-10>, \"reason\": \"<Korean>\"}.\n"
+            "{\"id\": \"<id>\", \"score\": <0-10>, \"reason\": \"<Korean one-line>\"}.\n"
+            "Focus only on the answer (not the question) when scoring.\n"
             "Respond ONLY with the JSON array.\n\n"
-            f"Quotes:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
+            f"Answers:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
         )
 
         raw = _call_api(
@@ -178,74 +296,87 @@ def _first_pass_batch(
             system_prompt=system_prompt,
             user_message=user_msg,
             max_tokens=512,
-            quote_id=f"batch_{batch_start}",
+            quote_id=f"{driver}_batch_{batch_start}",
         )
 
         if raw is None:
-            logger.warning("[first_pass] 배치 %d 스킵 (API 오류)", batch_start)
+            logger.warning("[first_pass] %s 배치 %d 스킵 (API 오류)", driver, batch_start)
             continue
 
-        # JSON 파싱
         try:
             json_str = _extract_json(raw)
             results = json.loads(json_str)
 
-            # 단일 오브젝트로 왔을 때 배열로 감싸기
             if isinstance(results, dict):
                 results = [results]
 
-            # id → statement 매핑
-            id_to_stmt = {f"q{s.seq}": s for s in batch}
+            id_to_qa = {f"q{qa['seq']}": qa for qa in batch}
 
             for item in results:
                 qid = item.get("id", "")
-                stmt = id_to_stmt.get(qid)
-                if stmt is None:
+                qa = id_to_qa.get(qid)
+                if qa is None:
                     continue
                 scored.append(ScoredStatement(
-                    speaker=stmt.speaker,
-                    text=stmt.text,
+                    speaker=driver,
+                    text=qa["a"],
                     score=int(item.get("score", 0)),
                     reason=item.get("reason", ""),
-                    seq=stmt.seq,
+                    seq=qa["seq"],
                 ))
 
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            logger.warning("[first_pass] JSON 파싱 실패 (배치 %d): %s | raw=%s",
-                           batch_start, exc, raw[:200])
-            # 파싱 실패 시 배치의 각 발언을 score=0으로 삽입하지 않고 스킵
-            continue
+            logger.warning("[first_pass] JSON 파싱 실패 (%s 배치 %d): %s | raw=%s",
+                           driver, batch_start, exc, raw[:200])
 
     return scored
 
 
 # ──────────────────────────────────────────────
-# 단계 4: 2차 선별
+# 단계 3: 2차 선별 — 드라이버별 핵심 답변 3~5개
 # ──────────────────────────────────────────────
 
-def _second_pass(
+def _second_pass_driver(
     client: Anthropic,
     guard: CostGuard,
-    candidates: list[ScoredStatement],
+    driver: str,
+    scored: list[ScoredStatement],
+    qa_list: list[dict],
     event_label: str,
     system_prompt: str,
-) -> tuple[list[str], str]:
+) -> list[dict]:
     """
-    후보 발언 전체를 1회 호출로 최종 3~5개 선정한다.
-    반환: (선정된 id 목록, 선정 근거)
+    드라이버 1명의 채점된 발언 목록에서 핵심 Q&A 3~5개를 선정한다.
+    반환: [{"seq": int, "q": str, "a": str}, ...]  — 선정된 Q&A 쌍
     """
+    # score 기준 내림차순 정렬
+    sorted_scored = sorted(scored, key=lambda s: s.score, reverse=True)
+
     items = []
-    for s in candidates:
+    seq_to_qa = {qa["seq"]: qa for qa in qa_list}
+    for s in sorted_scored:
+        qa = seq_to_qa.get(s.seq, {})
         items.append({
             "id": f"q{s.seq}",
-            "speaker": s.speaker,
+            "speaker": driver,
             "event": event_label,
-            "quote": s.text,
+            "question": qa.get("q", ""),
+            "answer": s.text,
             "score": s.score,
             "reason": s.reason,
         })
 
-    user_msg = json.dumps(items, ensure_ascii=False, indent=2)
+    user_msg = (
+        "Select the best 3 to 5 answers from the following list for an Instagram carousel post "
+        "about this driver's press conference.\n"
+        "Prefer high-scoring answers with substantive content. "
+        "Avoid selecting duplicate topics.\n"
+        "Return a JSON object: "
+        "{\"selected\": [\"<id1>\", \"<id2>\", ...], \"rationale\": \"<Korean, 60자 이내>\"}.\n"
+        "If fewer than 3 suitable answers exist, select all available.\n"
+        "Respond ONLY with the JSON object.\n\n"
+        f"Answers:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
+    )
 
     raw = _call_api(
         client=client,
@@ -255,643 +386,457 @@ def _second_pass(
         prompt_stage="second_pass",
         system_prompt=system_prompt,
         user_message=user_msg,
-        max_tokens=512,
+        max_tokens=256,
+        quote_id=driver,
     )
 
     if raw is None:
-        return [], "API 오류로 선정 실패"
+        logger.warning("[second_pass] %s API 오류, 상위 3개 자동 선정", driver)
+        top3 = sorted_scored[:3]
+        return [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
 
     try:
         json_str = _extract_json(raw)
         data = json.loads(json_str)
         selected_ids = data.get("selected", [])
         rationale = data.get("rationale", "")
-        return selected_ids, rationale
+        logger.info("[second_pass] %s: %d개 선정 — %s", driver, len(selected_ids), rationale)
+
+        selected_qa = []
+        id_to_qa = {f"q{qa['seq']}": qa for qa in qa_list}
+        for sid in selected_ids:
+            qa = id_to_qa.get(sid)
+            if qa:
+                selected_qa.append(qa)
+        return selected_qa
+
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("[second_pass] JSON 파싱 실패: %s | raw=%s", exc, raw[:200])
-        return [], "파싱 실패"
+        logger.warning("[second_pass] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
+        top3 = sorted_scored[:3]
+        return [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
 
 
 # ──────────────────────────────────────────────
-# 단계 5: 3차 검토 (조건부 Sonnet)
+# 단계 4: 번역 — 선정된 Q&A 전문 번역
 # ──────────────────────────────────────────────
 
-def _should_trigger_quality_check(
-    all_scored: list[ScoredStatement],
-    selected_ids: list[str],
-) -> tuple[bool, str]:
-    """
-    3차 검토 트리거 조건 판단.
-    반환: (트리거 여부, 트리거 사유)
-    """
-    reasons = []
-
-    # 조건 1: 점수 분산 ≥ 4
-    scores = [s.score for s in all_scored]
-    if len(scores) >= 2:
-        variance = statistics.variance(scores)
-        if variance >= CONTENT["sonnet_trigger_score_variance"]:
-            reasons.append(f"점수 분산 {variance:.1f} ≥ {CONTENT['sonnet_trigger_score_variance']}")
-
-    # 조건 2: 선정 발언 수 < 1
-    if len(selected_ids) < 1:
-        reasons.append("선정 발언 없음")
-
-    # 조건 3: 밈 후보 ≥ 2 (score 7 이상 & reason에 '밈' 포함하거나 score ≥ 8인 짧은 발언)
-    meme_candidates = [
-        s for s in all_scored
-        if s.score >= 7 and (
-            "밈" in s.reason
-            or "meme" in s.reason.lower()
-            or (s.score >= 9 and len(s.text.split()) <= 15)
-        )
-    ]
-    if len(meme_candidates) >= 2:
-        reasons.append(f"밈 후보 {len(meme_candidates)}개")
-
-    trigger = len(reasons) > 0
-    return trigger, " / ".join(reasons) if reasons else ""
-
-
-def _quality_check(
+def _translate_driver_qa(
     client: Anthropic,
     guard: CostGuard,
-    all_scored: list[ScoredStatement],
-    selected_ids: list[str],
-    rationale: str,
-    trigger_reason: str,
+    driver: str,
+    selected_qa: list[dict],
+    event_label: str,
     system_prompt: str,
-) -> tuple[list[str], str]:
+    speaker_ko: str = "",
+) -> list[dict]:
     """
-    Sonnet으로 3차 검토를 수행한다.
-    APPROVE/REVISE/REJECT 판정을 반환하고,
-    REJECT가 아니면 selected_ids를 그대로 유지한다.
-    반환: (최종 selected_ids, final_recommendation)
+    선정된 Q&A 전체를 한 번에 번역한다.
+    반환: [{"q_ko": str, "a_ko": str, "q_en": str, "a_en": str}, ...]
     """
-    all_quotes_payload = []
-    for s in all_scored:
-        meme_candidate = (
-            "밈" in s.reason
-            or "meme" in s.reason.lower()
-            or (s.score >= 9 and len(s.text.split()) <= 15)
-        )
-        all_quotes_payload.append({
-            "id": f"q{s.seq}",
-            "speaker": s.speaker,
-            "quote": s.text,
-            "score": s.score,
-            "reason": s.reason,
-            "meme_candidate": meme_candidate,
-        })
-
     payload = {
-        "all_quotes": all_quotes_payload,
-        "selected_ids": selected_ids,
-        "selection_rationale": rationale,
-        "trigger_reason": trigger_reason,
+        "speaker": driver,
+        "speaker_ko": speaker_ko,
+        "event": event_label,
+        "qa_pairs": [{"q": qa["q"], "a": qa["a"]} for qa in selected_qa],
     }
+
+    user_msg = json.dumps(payload, ensure_ascii=False, indent=2)
 
     raw = _call_api(
         client=client,
         guard=guard,
-        model=SONNET_MODEL,
-        guard_model=_SONNET_GUARD,
-        prompt_stage="quality_check",
+        model=HAIKU_MODEL,
+        guard_model=_HAIKU_GUARD,
+        prompt_stage="interview_translate",
         system_prompt=system_prompt,
-        user_message=json.dumps(payload, ensure_ascii=False, indent=2),
-        max_tokens=1024,
+        user_message=user_msg,
+        max_tokens=3000,
+        quote_id=driver,
     )
 
     if raw is None:
-        logger.warning("[quality_check] Sonnet 호출 실패, 2차 선별 결과 유지")
-        return selected_ids, "APPROVE"
+        logger.warning("[translate] %s 번역 실패", driver)
+        return []
 
     try:
         json_str = _extract_json(raw)
         data = json.loads(json_str)
-        recommendation = data.get("final_recommendation", "APPROVE")
-        reason = data.get("recommendation_reason", "")
-        logger.info("[quality_check] %s — %s", recommendation, reason)
+        translated_pairs = data.get("translated_qa", [])
 
-        if recommendation == "REJECT":
-            # REJECT: 선정 목록 비우기 (추후 fallback 처리)
-            logger.warning("[quality_check] REJECT — 선정 발언 전체 제거")
-            return [], recommendation
-
-        return selected_ids, recommendation
+        result = []
+        for i, pair in enumerate(translated_pairs):
+            orig = selected_qa[i] if i < len(selected_qa) else {}
+            result.append({
+                "q_ko": pair.get("q_ko", ""),
+                "a_ko": pair.get("a_ko", ""),
+                "q_en": orig.get("q", ""),
+                "a_en": orig.get("a", ""),
+            })
+        return result
 
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("[quality_check] JSON 파싱 실패: %s | raw=%s", exc, raw[:200])
-        return selected_ids, "APPROVE"
-
-
-# ──────────────────────────────────────────────
-# 단계 5b: card_type 결정
-# ──────────────────────────────────────────────
-
-def _determine_card_type(scored: ScoredStatement) -> str:
-    """
-    발언의 card_type을 결정한다.
-    밈 징후 발언 → "meme", 나머지 → "info"
-    """
-    is_meme = (
-        "밈" in scored.reason
-        or "meme" in scored.reason.lower()
-        or (scored.score >= 9 and len(scored.text.split()) <= 12)
-    )
-    return "meme" if is_meme else "info"
-
-
-# ──────────────────────────────────────────────
-# 단계 6: 번역 (배치)
-# ──────────────────────────────────────────────
-
-def _translate_quotes(
-    client: Anthropic,
-    guard: CostGuard,
-    selected_quotes: list[SelectedQuote],
-    event_label: str,
-    system_prompt: str,
-) -> list[TranslatedQuote]:
-    """
-    선정된 발언들을 배치로 번역한다.
-    프롬프트가 단일 발언 기준이므로 여러 발언을 묶어 배열 응답으로 요청한다.
-    """
-    if not selected_quotes:
+        logger.warning("[translate] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
         return []
 
-    items = []
-    for sq in selected_quotes:
-        items.append({
-            "id": f"q{sq.seq}",
-            "speaker": sq.speaker,
-            "event": event_label,
-            "quote": sq.text,
-        })
 
-    user_msg = (
-        "Translate each of the following quotes.\n"
-        "Return a JSON array where each element has: "
-        "{\"id\": \"<id>\", \"speaker_ko\": \"<Korean name>\", "
-        "\"translation\": \"<Korean translation>\", \"notes\": <null or string>}.\n"
-        "Respond ONLY with the JSON array.\n\n"
-        f"Quotes:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
-    )
+# ──────────────────────────────────────────────
+# 단계 5: 커버 헤드라인 생성
+# ──────────────────────────────────────────────
+
+def _generate_cover_headline(
+    client: Anthropic,
+    guard: CostGuard,
+    driver: str,
+    speaker_ko: str,
+    event_label: str,
+    translated_qa: list[dict],
+    system_prompt: str,
+) -> str:
+    """
+    번역된 Q&A를 기반으로 커버 카드용 한 줄 헤드라인을 생성한다.
+    반환: 헤드라인 문자열 (15~25자)
+    """
+    payload = {
+        "speaker_ko": speaker_ko,
+        "event": event_label,
+        "translated_qa": [
+            {"q_ko": qa["q_ko"], "a_ko": qa["a_ko"]}
+            for qa in translated_qa
+        ],
+    }
+
+    user_msg = json.dumps(payload, ensure_ascii=False, indent=2)
 
     raw = _call_api(
         client=client,
         guard=guard,
         model=HAIKU_MODEL,
         guard_model=_HAIKU_GUARD,
-        prompt_stage="translate",
+        prompt_stage="cover_summary",
         system_prompt=system_prompt,
         user_message=user_msg,
-        max_tokens=1024,
-    )
-
-    translated: list[TranslatedQuote] = []
-    id_to_sq = {f"q{sq.seq}": sq for sq in selected_quotes}
-
-    if raw is None:
-        logger.warning("[translate] 배치 번역 실패, 모든 발언 스킵")
-        return []
-
-    try:
-        json_str = _extract_json(raw)
-        results = json.loads(json_str)
-
-        if isinstance(results, dict):
-            results = [results]
-
-        for item in results:
-            qid = item.get("id", "")
-            sq = id_to_sq.get(qid)
-            if sq is None:
-                continue
-            translated.append(TranslatedQuote(
-                speaker=sq.speaker,
-                speaker_kr=item.get("speaker_ko", sq.speaker),
-                text_en=sq.text,
-                text_kr=item.get("translation", ""),
-                card_type=sq.card_type,
-                seq=sq.seq,
-            ))
-
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("[translate] JSON 파싱 실패: %s | raw=%s", exc, raw[:200])
-
-    return translated
-
-
-# ──────────────────────────────────────────────
-# 단계 7: 요약 (배치)
-# ──────────────────────────────────────────────
-
-def _summarize_quotes(
-    client: Anthropic,
-    guard: CostGuard,
-    translated_quotes: list[TranslatedQuote],
-    event_label: str,
-    system_prompt: str,
-) -> dict[int, dict]:
-    """
-    번역된 발언들을 배치로 요약한다.
-    반환: {seq: {"main_copy": ..., "sub_copy": ...}}
-    """
-    if not translated_quotes:
-        return {}
-
-    items = []
-    for tq in translated_quotes:
-        items.append({
-            "id": f"q{tq.seq}",
-            "speaker_ko": tq.speaker_kr,
-            "event": event_label,
-            "translation": tq.text_kr,
-        })
-
-    user_msg = (
-        "Write main copy and sub copy for each of the following translated quotes.\n"
-        "Return a JSON array where each element has: "
-        "{\"id\": \"<id>\", \"main_copy\": \"<25자 이내>\", \"sub_copy\": \"<40자 이내>\"}.\n"
-        "Respond ONLY with the JSON array.\n\n"
-        f"Quotes:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
-    )
-
-    raw = _call_api(
-        client=client,
-        guard=guard,
-        model=HAIKU_MODEL,
-        guard_model=_HAIKU_GUARD,
-        prompt_stage="summarize",
-        system_prompt=system_prompt,
-        user_message=user_msg,
-        max_tokens=1024,
-    )
-
-    copies: dict[int, dict] = {}
-
-    if raw is None:
-        logger.warning("[summarize] 배치 요약 실패")
-        return {}
-
-    try:
-        json_str = _extract_json(raw)
-        results = json.loads(json_str)
-
-        if isinstance(results, dict):
-            results = [results]
-
-        for item in results:
-            qid = item.get("id", "")
-            if not qid.startswith("q"):
-                continue
-            try:
-                seq = int(qid[1:])
-            except ValueError:
-                continue
-            copies[seq] = {
-                "main_copy": item.get("main_copy", ""),
-                "sub_copy": item.get("sub_copy", ""),
-            }
-
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("[summarize] JSON 파싱 실패: %s | raw=%s", exc, raw[:200])
-
-    return copies
-
-
-# ──────────────────────────────────────────────
-# 단계 8: 밈 판단 (Sonnet, card_type == "meme")
-# ──────────────────────────────────────────────
-
-def _meme_judge(
-    client: Anthropic,
-    guard: CostGuard,
-    translated_quotes: list[TranslatedQuote],
-    event_label: str,
-    system_prompt: str,
-) -> dict[int, str]:
-    """
-    card_type == "meme" 인 발언들을 Sonnet 1회 배치 호출로 최종 확인한다.
-    meme_potential == "low" 이면 card_type을 "info"로 강등한다.
-    반환: {seq: 최종 card_type}
-    """
-    meme_quotes = [tq for tq in translated_quotes if tq.card_type == "meme"]
-    result: dict[int, str] = {}
-
-    if not meme_quotes:
-        return result
-
-    # 밈 후보 전체를 하나의 배열로 묶어 배치 호출
-    items = []
-    for tq in meme_quotes:
-        items.append({
-            "id": f"q{tq.seq}",
-            "speaker_ko": tq.speaker_kr,
-            "event": event_label,
-            "translation": tq.text_kr,
-            "score": 0,    # 이 단계에서 원점수는 없으므로 0 기본값
-            "context": None,
-        })
-
-    user_msg = (
-        "Judge the meme potential of each of the following quotes.\n"
-        "Return a JSON array where each element has: "
-        "{\"id\": \"<id>\", \"meme_potential\": \"<high|medium|low>\", \"reason\": \"<Korean>\"}.\n"
-        "Respond ONLY with the JSON array.\n\n"
-        f"Quotes:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
-    )
-
-    raw = _call_api(
-        client=client,
-        guard=guard,
-        model=SONNET_MODEL,
-        guard_model=_SONNET_GUARD,
-        prompt_stage="meme_judge",
-        system_prompt=system_prompt,
-        user_message=user_msg,
-        max_tokens=512,
-        quote_id="batch",
+        max_tokens=256,
+        quote_id=driver,
     )
 
     if raw is None:
-        logger.warning("[meme_judge] 배치 호출 실패, 모든 밈 후보 card_type 유지")
-        for tq in meme_quotes:
-            result[tq.seq] = "meme"
-        return result
+        logger.warning("[cover_summary] %s 헤드라인 생성 실패", driver)
+        return f"{speaker_ko} 인터뷰 전문"
 
     try:
         json_str = _extract_json(raw)
-        results = json.loads(json_str)
-
-        if isinstance(results, dict):
-            results = [results]
-
-        id_to_seq = {f"q{tq.seq}": tq.seq for tq in meme_quotes}
-
-        for item in results:
-            qid = item.get("id", "")
-            seq = id_to_seq.get(qid)
-            if seq is None:
-                continue
-            potential = item.get("meme_potential", "medium")
-            if potential == "low":
-                logger.info("[meme_judge] %s: meme_potential=low → card_type=info", qid)
-                result[seq] = "info"
-            else:
-                result[seq] = "meme"
+        data = json.loads(json_str)
+        headline = data.get("headline", "")
+        char_count = data.get("char_count", len(headline))
+        rationale = data.get("rationale", "")
+        logger.info("[cover_summary] %s: \"%s\" (%d자) — %s",
+                    driver, headline, char_count, rationale)
+        return headline
 
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        logger.warning("[meme_judge] JSON 파싱 실패: %s | raw=%s", exc, raw[:200])
-        for tq in meme_quotes:
-            result[tq.seq] = "meme"
-
-    # 배치 응답에서 누락된 항목은 기본값 "meme" 유지
-    for tq in meme_quotes:
-        if tq.seq not in result:
-            logger.warning("[meme_judge] q%d 응답 누락, card_type 유지", tq.seq)
-            result[tq.seq] = "meme"
-
-    return result
+        logger.warning("[cover_summary] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
+        return f"{speaker_ko} 인터뷰 전문"
 
 
 # ──────────────────────────────────────────────
-# 메인 파이프라인
+# 단계 6: 슬라이드 분할 (코드 처리)
 # ──────────────────────────────────────────────
 
-def run_pipeline(conference: PressConference, gp_name: str) -> CardSet:
+def _split_into_slides(translated_qa: list[dict]) -> list[InterviewSlide]:
     """
-    3단계 AI 선별 파이프라인 실행.
+    번역된 Q&A 목록을 ~180자 슬라이드로 분할한다.
 
-    Args:
-        conference: 수집된 기자회견 데이터
-        gp_name:    GP 식별자 (예: "japan_2026") — 비용 로그 파일명에 사용
+    분할 원칙:
+    1. Q&A 쌍 단위로 먼저 처리
+    2. 질문이 있으면 "Q. {질문}" + 개행 + 답변 형태로 합침
+    3. 합쳐진 텍스트가 _SLIDE_MAX_CHARS 이하면 1장
+    4. 초과 시 textwrap으로 _SLIDE_TARGET_CHARS 단위로 분할
+    5. 슬라이드 번호는 2부터 시작 (1은 커버)
 
-    Returns:
-        CardSet: 렌더러에 전달할 카드 세트
+    반환: List[InterviewSlide]
     """
-    client = Anthropic()
-    guard  = CostGuard(gp_name=gp_name)
+    slides: list[InterviewSlide] = []
+    slide_num = 2  # 1은 커버 카드
 
-    # 이벤트 레이블 (프롬프트에 삽입)
-    event_label = f"{conference.gp_name} – {conference.conference_type}"
+    for pair in translated_qa:
+        q_ko = pair.get("q_ko", "").strip()
+        a_ko = pair.get("a_ko", "").strip()
+        q_en = pair.get("q_en", "").strip()
+        a_en = pair.get("a_en", "").strip()
 
-    # 프롬프트 로드
-    prompt_first_pass    = _load_prompt("first_pass")
-    prompt_second_pass   = _load_prompt("second_pass")
-    prompt_quality_check = _load_prompt("quality_check")
-    prompt_translate     = _load_prompt("translate")
-    prompt_summarize     = _load_prompt("summarize")
-    prompt_meme_judge    = _load_prompt("meme_judge")
-
-    logger.info("[pipeline] 시작: %s (%s)", conference.gp_name, conference.conference_type)
-
-    # ── 단계 1: 드라이버 발언 추출 ──────────────────────
-    driver_stmts = _extract_driver_statements(conference)
-    logger.info("[pipeline] 드라이버 발언 %d개 추출", len(driver_stmts))
-
-    if not driver_stmts:
-        logger.warning("[pipeline] 드라이버 발언 없음 — 빈 CardSet 반환")
-        return CardSet(
-            gp_name=conference.gp_name,
-            conference_type=conference.conference_type,
-            date_iso=conference.date_iso,
-            cards=[],
-            total_cost_usd=guard.gp_total,
-        )
-
-    # ── 단계 2: 1차 선별 (배치 채점) ────────────────────
-    all_scored = _first_pass_batch(
-        client=client,
-        guard=guard,
-        statements=driver_stmts,
-        event_label=event_label,
-        system_prompt=prompt_first_pass,
-    )
-    logger.info("[pipeline] 1차 선별 완료: %d개 채점", len(all_scored))
-
-    # ── 단계 3: 최소 점수 필터 ──────────────────────────
-    min_score = CONTENT["min_score_first_pass"]
-    candidates = [s for s in all_scored if s.score >= min_score]
-    logger.info("[pipeline] %d점 이상 후보: %d개", min_score, len(candidates))
-
-    # 후보가 없을 경우 하위 점수 완화 (최소 3개 확보 시도)
-    if len(candidates) < 3 and all_scored:
-        all_scored_sorted = sorted(all_scored, key=lambda x: x.score, reverse=True)
-        candidates = all_scored_sorted[:max(3, len(candidates))]
-        logger.info("[pipeline] 후보 부족 → 상위 %d개로 완화", len(candidates))
-
-    if not candidates:
-        logger.warning("[pipeline] 선별 가능 후보 없음 — 빈 CardSet 반환")
-        return CardSet(
-            gp_name=conference.gp_name,
-            conference_type=conference.conference_type,
-            date_iso=conference.date_iso,
-            cards=[],
-            total_cost_usd=guard.gp_total,
-        )
-
-    # ── 단계 4: 2차 선별 ────────────────────────────────
-    selected_ids, rationale = _second_pass(
-        client=client,
-        guard=guard,
-        candidates=candidates,
-        event_label=event_label,
-        system_prompt=prompt_second_pass,
-    )
-    logger.info("[pipeline] 2차 선별 완료: %d개 선정 — %s", len(selected_ids), rationale)
-
-    # ── 단계 5: 3차 검토 (조건부 Sonnet) ────────────────
-    trigger, trigger_reason = _should_trigger_quality_check(all_scored, selected_ids)
-    if trigger:
-        logger.info("[pipeline] 3차 검토 트리거: %s", trigger_reason)
-        selected_ids, recommendation = _quality_check(
-            client=client,
-            guard=guard,
-            all_scored=all_scored,
-            selected_ids=selected_ids,
-            rationale=rationale,
-            trigger_reason=trigger_reason,
-            system_prompt=prompt_quality_check,
-        )
-        logger.info("[pipeline] 3차 검토 결과: %s, 선정 %d개", recommendation, len(selected_ids))
-    else:
-        logger.info("[pipeline] 3차 검토 스킵 (트리거 조건 미충족)")
-
-    # 선정 ID → ScoredStatement 매핑
-    id_to_scored: dict[str, ScoredStatement] = {f"q{s.seq}": s for s in all_scored}
-
-    selected_quotes: list[SelectedQuote] = []
-    for qid in selected_ids:
-        scored = id_to_scored.get(qid)
-        if scored is None:
-            logger.warning("[pipeline] 선정 ID %s를 scored 목록에서 찾지 못함", qid)
+        if not a_ko:
             continue
-        card_type = _determine_card_type(scored)
-        selected_quotes.append(SelectedQuote(
-            speaker=scored.speaker,
-            text=scored.text,
-            card_type=card_type,
-            score=scored.score,
-            seq=scored.seq,
-        ))
 
-    if not selected_quotes:
-        logger.warning("[pipeline] 최종 선정 발언 없음 — 빈 CardSet 반환")
-        return CardSet(
-            gp_name=conference.gp_name,
-            conference_type=conference.conference_type,
-            date_iso=conference.date_iso,
-            cards=[],
-            total_cost_usd=guard.gp_total,
-        )
+        # 질문이 있으면 "Q. 질문\n\n답변" 형태로 결합
+        if q_ko:
+            full_text = f"Q. {q_ko}\n\n{a_ko}"
+            full_text_en = f"Q. {q_en}\n\n{a_en}" if q_en else a_en
+        else:
+            full_text = a_ko
+            full_text_en = a_en
 
-    # ── 단계 6: 번역 ─────────────────────────────────────
-    translated_quotes = _translate_quotes(
-        client=client,
-        guard=guard,
-        selected_quotes=selected_quotes,
-        event_label=event_label,
-        system_prompt=prompt_translate,
-    )
-    logger.info("[pipeline] 번역 완료: %d개", len(translated_quotes))
+        # 길이가 _SLIDE_MAX_CHARS 이하면 1장으로 처리
+        if len(full_text) <= _SLIDE_MAX_CHARS:
+            slides.append(InterviewSlide(
+                slide_num=slide_num,
+                text_kr=full_text,
+                text_en=full_text_en,
+            ))
+            slide_num += 1
+        else:
+            # 질문은 첫 슬라이드에 포함, 답변만 분할
+            if q_ko:
+                header = f"Q. {q_ko}\n\n"
+                answer_text = a_ko
+                answer_text_en = a_en
+            else:
+                header = ""
+                answer_text = a_ko
+                answer_text_en = a_en
 
-    # 번역 실패한 발언은 원문 그대로 사용
-    translated_seqs = {tq.seq for tq in translated_quotes}
-    for sq in selected_quotes:
-        if sq.seq not in translated_seqs:
-            logger.warning("[pipeline] q%d 번역 누락, 원문 사용", sq.seq)
-            translated_quotes.append(TranslatedQuote(
-                speaker=sq.speaker,
-                speaker_kr=sq.speaker,
-                text_en=sq.text,
-                text_kr=sq.text,
-                card_type=sq.card_type,
-                seq=sq.seq,
+            # 답변을 문장 단위로 분할 시도
+            chunks = _split_text_by_sentence(answer_text, _SLIDE_TARGET_CHARS)
+            chunks_en = _split_text_by_sentence(answer_text_en, _SLIDE_TARGET_CHARS) if answer_text_en else [""] * len(chunks)
+
+            for ci, chunk in enumerate(chunks):
+                slide_text = (header + chunk) if ci == 0 else chunk
+                slide_text_en = (f"Q. {q_en}\n\n" + chunks_en[ci] if (ci == 0 and q_en) else chunks_en[ci]) if ci < len(chunks_en) else ""
+                slides.append(InterviewSlide(
+                    slide_num=slide_num,
+                    text_kr=slide_text.strip(),
+                    text_en=slide_text_en.strip(),
+                ))
+                slide_num += 1
+
+    return slides
+
+
+def _split_text_by_sentence(text: str, target_chars: int) -> list[str]:
+    """
+    텍스트를 문장 단위로 묶어 target_chars 이하의 청크로 분할한다.
+    문장 경계: 마침표/느낌표/물음표 뒤 공백 또는 줄바꿈.
+    """
+    # 문장 분리 (한국어 문장 끝: . ! ? 뒤 공백 또는 줄바꿈)
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if not sentences:
+        return [text]
+
+    chunks = []
+    current = ""
+
+    for sent in sentences:
+        candidate = (current + " " + sent).strip() if current else sent
+        if len(candidate) <= target_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # 단일 문장이 target_chars 초과 시 강제 분할
+            if len(sent) > target_chars:
+                sub_chunks = _hard_split(sent, target_chars)
+                chunks.extend(sub_chunks[:-1])
+                current = sub_chunks[-1] if sub_chunks else ""
+            else:
+                current = sent
+
+    if current:
+        chunks.append(current)
+
+    return chunks if chunks else [text]
+
+
+def _hard_split(text: str, max_chars: int) -> list[str]:
+    """글자 수 기준 강제 분할 (문장 경계 무시)."""
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+
+
+# ──────────────────────────────────────────────
+# 단계 6-B: Q/A 분리 슬라이드 분할
+# ──────────────────────────────────────────────
+
+def _split_answer(text: str, max_chars: int = _ANSWER_TARGET_CHARS) -> list[str]:
+    """
+    답변 텍스트를 문장 완결 단위로 분할한다.
+
+    분할 규칙:
+    - 문장 끝(마침표, 물음표, 느낌표) 기준으로 끊기
+    - 한 장에 80~120자 목표 (최대 150자)
+    - 30자 미만 청크는 이전 슬라이드에 합침
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if not sentences:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+
+    for sent in sentences:
+        candidate = (current + " " + sent).strip() if current else sent
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # 단일 문장이 max_chars 초과 시 강제 분할
+            if len(sent) > _ANSWER_MAX_CHARS:
+                sub_chunks = _hard_split(sent, max_chars)
+                chunks.extend(sub_chunks[:-1])
+                current = sub_chunks[-1] if sub_chunks else ""
+            else:
+                current = sent
+
+    if current:
+        chunks.append(current)
+
+    # 30자 미만 청크를 이전 청크에 합침
+    if len(chunks) > 1:
+        merged: list[str] = [chunks[0]]
+        for chunk in chunks[1:]:
+            if len(chunk) < _ANSWER_MIN_CHARS and merged:
+                merged[-1] = merged[-1] + " " + chunk
+            else:
+                merged.append(chunk)
+        chunks = merged
+
+    return chunks if chunks else [text]
+
+
+def _split_qa_into_slides(translated_qa: list[dict]) -> list[InterviewSlide]:
+    """
+    번역된 Q&A 목록을 Q슬라이드 + A슬라이드(들)로 분리하여 배열한다.
+
+    구조: [Q슬라이드] → [A슬라이드1] → [A슬라이드2(이어짐)] → [Q슬라이드] → ...
+
+    분할 규칙:
+    - Q 슬라이드: 질문 1장 (slide_type="question")
+    - A 슬라이드: 답변 80~120자씩, 문장 완결 단위 분할 (slide_type="answer")
+    - 전체 슬라이드 수: 커버(1) + Q/A 본문 + 출처(1) <= 20장
+    - 초과 시 Q/A 세트를 줄여서 맞춤
+    """
+    slides: list[InterviewSlide] = []
+    slide_num = 2  # 1은 커버 카드
+
+    # 먼저 Q/A 세트별로 필요한 슬라이드 수를 계산
+    qa_slide_sets: list[list[InterviewSlide]] = []
+
+    for pair in translated_qa:
+        q_ko = pair.get("q_ko", "").strip()
+        a_ko = pair.get("a_ko", "").strip()
+        q_en = pair.get("q_en", "").strip()
+        a_en = pair.get("a_en", "").strip()
+
+        if not a_ko:
+            continue
+
+        qa_set: list[InterviewSlide] = []
+
+        # Q 슬라이드 (1장)
+        if q_ko:
+            qa_set.append(InterviewSlide(
+                slide_num=0,  # 나중에 재번호 매김
+                text_kr=q_ko,
+                text_en=q_en,
+                slide_type="question",
             ))
 
-    # ── 단계 7: 요약 ─────────────────────────────────────
-    copies = _summarize_quotes(
-        client=client,
-        guard=guard,
-        translated_quotes=translated_quotes,
-        event_label=event_label,
-        system_prompt=prompt_summarize,
-    )
-    logger.info("[pipeline] 요약 완료: %d개", len(copies))
+        # A 슬라이드 (1~3장, 답변 길이에 따라)
+        answer_chunks = _split_answer(a_ko, max_chars=_ANSWER_TARGET_CHARS)
+        answer_chunks_en = _split_answer(a_en, max_chars=_ANSWER_TARGET_CHARS) if a_en else [""] * len(answer_chunks)
 
-    # ── 단계 8: 밈 판단 (Sonnet) ─────────────────────────
-    meme_type_overrides = _meme_judge(
-        client=client,
-        guard=guard,
-        translated_quotes=translated_quotes,
-        event_label=event_label,
-        system_prompt=prompt_meme_judge,
-    )
-    logger.info("[pipeline] 밈 판단 완료: %d개 처리", len(meme_type_overrides))
+        for ci, chunk in enumerate(answer_chunks):
+            en_chunk = answer_chunks_en[ci] if ci < len(answer_chunks_en) else ""
+            qa_set.append(InterviewSlide(
+                slide_num=0,
+                text_kr=chunk.strip(),
+                text_en=en_chunk.strip(),
+                slide_type="answer",
+            ))
 
-    # ── 단계 9: CardSet 조립 ─────────────────────────────
-    cards: list[CardContent] = []
-    for i, tq in enumerate(sorted(translated_quotes, key=lambda x: x.seq)):
-        # 밈 판단 결과 반영
-        final_card_type = meme_type_overrides.get(tq.seq, tq.card_type)
+        qa_slide_sets.append(qa_set)
 
-        # 카피 가져오기
-        copy_data = copies.get(tq.seq, {})
-        main_copy = copy_data.get("main_copy", "")
-        sub_copy  = copy_data.get("sub_copy", "")
+    # 전체 슬라이드 수 제한: 커버(1) + 본문 + 출처(1) <= _MAX_TOTAL_SLIDES
+    max_body_slides = _MAX_TOTAL_SLIDES - 2  # 커버, 출처 제외
 
-        # 팀 매핑
-        team = get_team_for_driver(tq.speaker)
+    # Q/A 세트를 하나씩 추가하며 제한 확인
+    total_body = 0
+    for qa_set in qa_slide_sets:
+        if total_body + len(qa_set) > max_body_slides:
+            # 이 세트를 추가하면 초과 → 여기서 중단
+            logger.info("[split_qa] 슬라이드 수 제한으로 Q/A 세트 잘림: "
+                        "현재 %d장, 추가 시도 %d장, 최대 %d장",
+                        total_body, len(qa_set), max_body_slides)
+            break
+        slides.extend(qa_set)
+        total_body += len(qa_set)
 
-        # GP 표시명 (한국어 형식으로 변환)
-        gp_display = _format_gp_display(conference.gp_name, conference.date_iso)
+    # 슬라이드 번호 재할당
+    for i, slide in enumerate(slides):
+        slide.slide_num = slide_num + i
 
-        cards.append(CardContent(
-            speaker_kr=tq.speaker_kr,
-            team=team,
-            main_copy=main_copy,
-            sub_copy=sub_copy,
-            quote_en=tq.text_en,
-            card_type=final_card_type,
-            gp_name=gp_display,
-            seq=i + 1,
-        ))
+    return slides
 
-    # ── 단계 10: 카드 최소 품질 게이트 ──────────────────
-    filtered_cards: list[CardContent] = []
-    for card in cards:
-        reasons = []
-        if len(card.main_copy) < 5:
-            reasons.append(f"main_copy 너무 짧음 ({len(card.main_copy)}자)")
-        if not card.quote_en:
-            reasons.append("quote_en 비어 있음")
-        if not card.sub_copy:
-            reasons.append("sub_copy 비어 있음")
 
-        if reasons:
-            logger.warning(
-                "[pipeline] 카드 품질 미달 제외 — seq=%d, speaker=%s, 사유: %s",
-                card.seq, card.speaker_kr, " / ".join(reasons),
-            )
-        else:
-            filtered_cards.append(card)
+# ──────────────────────────────────────────────
+# 단계 7: 드래프트 저장
+# ──────────────────────────────────────────────
 
-    excluded = len(cards) - len(filtered_cards)
-    if excluded > 0:
-        logger.info("[pipeline] 품질 게이트: %d장 제외, %d장 통과", excluded, len(filtered_cards))
+def _save_draft(carousel: CarouselSet, gp_slug: str) -> Path:
+    """
+    CarouselSet을 data/drafts/{gp_slug}_{driver_slug}.json에 저장한다.
+    반환: 저장된 파일 경로
+    """
+    _DRAFT_DIR.mkdir(parents=True, exist_ok=True)
 
-    total_cost = guard.gp_total
-    logger.info("[pipeline] 완료: 카드 %d장, 총 비용 $%.5f", len(filtered_cards), total_cost)
+    # 드라이버 slug: "Max VERSTAPPEN" → "verstappen"
+    driver_slug = carousel.speaker.split()[-1].lower()
+    filename = f"{gp_slug}_{driver_slug}.json"
+    path = _DRAFT_DIR / filename
 
-    return CardSet(
-        gp_name=conference.gp_name,
-        conference_type=conference.conference_type,
-        date_iso=conference.date_iso,
-        cards=filtered_cards,
-        total_cost_usd=round(total_cost, 6),
-    )
+    carousel.to_json(str(path))
+    logger.info("[draft] 저장 완료: %s (%d장)", path.name, carousel.total_slides)
+    return path
+
+
+# ──────────────────────────────────────────────
+# 헬퍼: 드라이버 한국어 이름 조회
+# ──────────────────────────────────────────────
+
+_DRIVER_KO_MAP: dict[str, str] = {
+    "Max VERSTAPPEN": "막스 페르스타펜",
+    "Liam LAWSON": "리암 로슨",
+    "Charles LECLERC": "샤를 르클레르",
+    "Lewis HAMILTON": "루이스 해밀턴",
+    "George RUSSELL": "조지 러셀",
+    "Kimi ANTONELLI": "키미 안토넬리",
+    "Lando NORRIS": "란도 노리스",
+    "Oscar PIASTRI": "오스카 피아스트리",
+    "Fernando ALONSO": "페르난도 알론소",
+    "Lance STROLL": "랜스 스트롤",
+    "Carlos SAINZ": "카를로스 사인츠",
+    "Alexander ALBON": "알렉산더 알본",
+    "Isack HADJAR": "이삭 아다르",
+    "Yuki TSUNODA": "유키 츠노다",
+    "Esteban OCON": "에스테반 오콘",
+    "Oliver BEARMAN": "올리버 베어먼",
+    "Pierre GASLY": "피에르 가슬리",
+    "Jack DOOHAN": "잭 두한",
+    "Nico HULKENBERG": "니코 휠켄베르크",
+    "Gabriel BORTOLETO": "가브리엘 보르톨레토",
+}
+
+
+def _get_driver_ko(speaker: str) -> str:
+    """드라이버 한국어 이름 반환. 매칭 실패 시 원본 반환."""
+    if speaker in _DRIVER_KO_MAP:
+        return _DRIVER_KO_MAP[speaker]
+
+    speaker_upper = speaker.upper()
+    for name, ko in _DRIVER_KO_MAP.items():
+        surname = name.split()[-1]
+        if surname in speaker_upper:
+            return ko
+
+    return speaker
 
 
 # ──────────────────────────────────────────────
@@ -934,3 +879,260 @@ def _format_gp_display(gp_name: str, date_iso: str) -> str:
 
     kr_name = _GP_KR_MAP.get(gp_name, gp_name)
     return f"{year} {kr_name}".strip()
+
+
+# ──────────────────────────────────────────────
+# 단일 드라이버 처리 파이프라인
+# ──────────────────────────────────────────────
+
+def _process_driver(
+    client: Anthropic,
+    guard: CostGuard,
+    driver: str,
+    qa_list: list[dict],
+    event_label: str,
+    conference: PressConference,
+    gp_slug: str,
+    prompts: dict[str, str],
+) -> Optional[CarouselSet]:
+    """
+    드라이버 1명에 대한 전체 파이프라인을 실행한다.
+    반환: CarouselSet 또는 None (처리 실패 시)
+    """
+    logger.info("[pipeline] 드라이버 처리 시작: %s (%d개 답변)", driver, len(qa_list))
+
+    # 2단계: 1차 선별
+    scored = _first_pass_driver(
+        client=client,
+        guard=guard,
+        driver=driver,
+        qa_list=qa_list,
+        event_label=event_label,
+        system_prompt=prompts["first_pass"],
+    )
+    if not scored:
+        logger.warning("[pipeline] %s 1차 선별 실패 또는 발언 없음", driver)
+        return None
+    logger.info("[pipeline] %s: 1차 선별 %d개 채점", driver, len(scored))
+
+    # 3단계: 2차 선별
+    selected_qa = _second_pass_driver(
+        client=client,
+        guard=guard,
+        driver=driver,
+        scored=scored,
+        qa_list=qa_list,
+        event_label=event_label,
+        system_prompt=prompts["second_pass"],
+    )
+    if not selected_qa:
+        logger.warning("[pipeline] %s 2차 선별 결과 없음", driver)
+        return None
+    logger.info("[pipeline] %s: 2차 선별 %d개 선정", driver, len(selected_qa))
+
+    # 드라이버 한국어 이름
+    speaker_ko = _get_driver_ko(driver)
+
+    # 4단계: 번역
+    translated_qa = _translate_driver_qa(
+        client=client,
+        guard=guard,
+        driver=driver,
+        selected_qa=selected_qa,
+        event_label=event_label,
+        system_prompt=prompts["interview_translate"],
+        speaker_ko=speaker_ko,
+    )
+    if not translated_qa:
+        logger.warning("[pipeline] %s 번역 실패", driver)
+        return None
+    logger.info("[pipeline] %s: 번역 완료 %d쌍", driver, len(translated_qa))
+
+    # 5단계: 커버 헤드라인 생성
+    headline = _generate_cover_headline(
+        client=client,
+        guard=guard,
+        driver=driver,
+        speaker_ko=speaker_ko,
+        event_label=event_label,
+        translated_qa=translated_qa,
+        system_prompt=prompts["cover_summary"],
+    )
+
+    # 6단계: 슬라이드 분할 (Q/A 분리)
+    slides = _split_qa_into_slides(translated_qa)
+    logger.info("[pipeline] %s: 슬라이드 %d장 생성 (Q/A 분리)", driver, len(slides))
+
+    # 슬라이드 수 확인
+    total_slides = 1 + len(slides) + 1  # 커버 + 본문 + 출처
+
+    logger.info("[pipeline] %s: 최종 %d장 (커버1 + 본문%d + 출처1)",
+                driver, total_slides, len(slides))
+
+    # 팀 / GP 이름
+    team = get_team_for_driver(driver)
+    gp_display = _format_gp_display(conference.gp_name, conference.date_iso)
+
+    carousel = CarouselSet(
+        speaker=driver,
+        speaker_kr=speaker_ko,
+        team=team,
+        gp_name=gp_display,
+        gp_name_en=conference.gp_name,
+        conference_type=conference.conference_type,
+        date_iso=conference.date_iso,
+        cover_headline=headline,
+        slides=slides,
+        total_cost_usd=0.0,  # 마지막에 guard.gp_total로 업데이트
+    )
+
+    # 7단계: 드래프트 저장
+    _save_draft(carousel, gp_slug)
+
+    return carousel
+
+
+# ──────────────────────────────────────────────
+# 메인 파이프라인
+# ──────────────────────────────────────────────
+
+def run_pipeline(
+    conference: PressConference,
+    gp_name: str,
+    target_drivers: Optional[list[str]] = None,
+) -> CarouselBatch:
+    """
+    인터뷰 번역 캐러셀 파이프라인 실행.
+
+    Args:
+        conference:      수집된 기자회견 데이터
+        gp_name:         GP 식별자 (예: "japan_2026") — 비용 로그 / 드래프트 파일명에 사용
+        target_drivers:  처리할 드라이버 목록. None이면 전체 참가자 처리.
+
+    Returns:
+        CarouselBatch: 드라이버별 CarouselSet 묶음
+    """
+    client = Anthropic()
+    guard = CostGuard(gp_name=gp_name)
+
+    event_label = f"{conference.gp_name} – {conference.conference_type}"
+
+    # 프롬프트 로드
+    prompts = {
+        "first_pass":         _load_prompt("first_pass"),
+        "second_pass":        _load_prompt("second_pass"),
+        "interview_translate": _load_prompt("interview_translate"),
+        "cover_summary":      _load_prompt("cover_summary"),
+    }
+
+    logger.info("[pipeline] 시작: %s (%s)", conference.gp_name, conference.conference_type)
+
+    # 사전 처리: 약칭 → 풀네임 변환
+    conference = _normalize_conference_speakers(conference)
+    logger.info("[pipeline] 약칭 정규화 완료 (participants: %d명)", len(conference.participants))
+
+    # 단계 1: 드라이버별 Q&A 재구성
+    qa_by_driver = _group_qa_by_driver(conference)
+    logger.info("[pipeline] 드라이버 %d명 Q&A 재구성 완료", len(qa_by_driver))
+
+    if not qa_by_driver:
+        logger.warning("[pipeline] 드라이버 발언 없음 — 빈 CarouselBatch 반환")
+        return CarouselBatch(
+            gp_name=conference.gp_name,
+            conference_type=conference.conference_type,
+            date_iso=conference.date_iso,
+            carousels=[],
+            total_cost_usd=guard.gp_total,
+        )
+
+    # 처리할 드라이버 필터링
+    drivers_to_process = list(qa_by_driver.keys())
+    if target_drivers:
+        drivers_to_process = [
+            d for d in drivers_to_process
+            if any(t.upper() in d.upper() or d.upper() in t.upper() for t in target_drivers)
+        ]
+        logger.info("[pipeline] 드라이버 필터 적용: %s", drivers_to_process)
+
+    carousels: list[CarouselSet] = []
+
+    for driver in drivers_to_process:
+        qa_list = qa_by_driver[driver]
+        if not qa_list:
+            continue
+
+        carousel = _process_driver(
+            client=client,
+            guard=guard,
+            driver=driver,
+            qa_list=qa_list,
+            event_label=event_label,
+            conference=conference,
+            gp_slug=gp_name,
+            prompts=prompts,
+        )
+
+        if carousel is not None:
+            carousel.total_cost_usd = round(guard.gp_total, 6)
+            carousels.append(carousel)
+
+    total_cost = guard.gp_total
+    logger.info(
+        "[pipeline] 완료: 드라이버 %d명 처리, 총 비용 $%.5f",
+        len(carousels), total_cost,
+    )
+
+    return CarouselBatch(
+        gp_name=conference.gp_name,
+        conference_type=conference.conference_type,
+        date_iso=conference.date_iso,
+        carousels=carousels,
+        total_cost_usd=round(total_cost, 6),
+    )
+
+
+# ──────────────────────────────────────────────
+# --from-draft 모드: 드래프트에서 직접 로드
+# ──────────────────────────────────────────────
+
+def load_from_draft(draft_path: str) -> CarouselSet:
+    """
+    data/drafts/{gp}_{driver}.json 파일에서 CarouselSet을 로드한다.
+    AI 호출 없이 렌더링 단계로 바로 진입할 때 사용.
+    """
+    return CarouselSet.from_json(draft_path)
+
+
+def load_batch_from_drafts(gp_slug: str) -> CarouselBatch:
+    """
+    data/drafts/{gp_slug}_*.json 파일 전체를 로드하여 CarouselBatch로 반환한다.
+    """
+    _DRAFT_DIR.mkdir(parents=True, exist_ok=True)
+    draft_files = sorted(_DRAFT_DIR.glob(f"{gp_slug}_*.json"))
+
+    if not draft_files:
+        logger.warning("[draft] %s 에 해당하는 드래프트 파일 없음", gp_slug)
+        return CarouselBatch(
+            gp_name=gp_slug,
+            conference_type="",
+            date_iso="",
+            carousels=[],
+        )
+
+    carousels = []
+    for path in draft_files:
+        try:
+            carousel = CarouselSet.from_json(str(path))
+            carousels.append(carousel)
+            logger.info("[draft] 로드: %s (%d장)", path.name, carousel.total_slides)
+        except Exception as exc:
+            logger.warning("[draft] 로드 실패 (%s): %s", path.name, exc)
+
+    # 첫 번째 캐러셀에서 공통 정보 추출
+    first = carousels[0] if carousels else None
+    return CarouselBatch(
+        gp_name=first.gp_name_en if first else gp_slug,
+        conference_type=first.conference_type if first else "",
+        date_iso=first.date_iso if first else "",
+        carousels=carousels,
+    )

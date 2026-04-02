@@ -15,6 +15,12 @@
 
     # 드라이런 (API 호출 없이 더미 데이터로 렌더링)
     python main.py --dry-run
+
+    # 기존 드래프트 검수 → 렌더링 (수집/AI 처리 없이)
+    python main.py --review
+
+    # 자동 모드 (검수 없이 즉시 렌더링)
+    python main.py --auto
 """
 
 import argparse
@@ -34,7 +40,7 @@ if _env_path.exists():
                 os.environ.setdefault(key.strip(), value.strip())
 
 from scraper.collector import Collector
-from models import PressConference, CardContent, CardSet
+from models import PressConference, CarouselSet, CarouselBatch, InterviewSlide
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,49 +65,74 @@ def scrape(url: str = None) -> list[PressConference]:
         return results
 
 
-def process(conferences: list[PressConference]) -> list[CardSet]:
-    """AI 파이프라인으로 카드 생성"""
+def process(conferences: list[PressConference]) -> list[CarouselBatch]:
+    """AI 파이프라인으로 캐러셀 배치 생성"""
     from processor.pipeline import run_pipeline
 
-    card_sets = []
+    batches = []
     for pc in conferences:
         logger.info(f"처리 중: {pc.gp_name} - {pc.conference_type}")
         try:
-            card_set = run_pipeline(pc, pc.gp_name)
-            if card_set and card_set.cards:
-                card_sets.append(card_set)
+            batch = run_pipeline(pc, pc.gp_name)
+            if batch and batch.carousels:
+                batches.append(batch)
                 logger.info(
-                    f"  → 카드 {len(card_set.cards)}장 생성, "
-                    f"비용 ${card_set.total_cost_usd:.4f}"
+                    f"  → 드라이버 {len(batch.carousels)}명 캐러셀 생성, "
+                    f"비용 ${batch.total_cost_usd:.4f}"
                 )
             else:
-                logger.warning(f"  → 카드 생성 실패 또는 0장")
+                logger.warning(f"  → 캐러셀 생성 실패 또는 0건")
         except Exception as e:
             logger.error(f"  → 파이프라인 에러: {e}")
-    return card_sets
+    return batches
 
 
-def render(card_sets: list[CardSet]) -> list[str]:
-    """카드 이미지 렌더링"""
-    from renderer.card_renderer import render_card_set
+def render(batches: list[CarouselBatch]) -> list[str]:
+    """캐러셀 이미지 렌더링"""
+    from renderer.carousel_renderer import render_carousel, save_carousel
+    from models import DRIVER_TEAM_MAP, get_team_for_driver
+    import re
 
     all_paths = []
-    for cs in card_sets:
-        logger.info(f"렌더링: {cs.gp_name} - {cs.conference_type} ({len(cs.cards)}장)")
-        paths = render_card_set(cs)
-        all_paths.extend(paths)
-        logger.info(f"  → {len(paths)}장 렌더링 완료")
+    for batch in batches:
+        logger.info(
+            f"렌더링: {batch.gp_name} - {batch.conference_type} "
+            f"({len(batch.carousels)}명)"
+        )
+        for carousel in batch.carousels:
+            carousel_data = {
+                "driver_kr": carousel.speaker_kr,
+                "team": carousel.team,
+                "car_number": "",
+                "gp_name": carousel.gp_name,
+                "summary": carousel.cover_headline,
+                "interview_texts": [s.text_kr for s in carousel.slides],
+                "date": carousel.date_iso,
+                "source_text": "FIA Official Press Conference",
+            }
+            images = render_carousel(carousel_data)
+
+            # 출력 디렉토리
+            slug = re.sub(r'[^a-z0-9]+', '_', batch.gp_name.lower()).strip('_')
+            surname = carousel.speaker.split()[-1].lower()
+            out_dir = f"output/{slug}_{batch.conference_type}/{surname}"
+
+            paths = save_carousel(images, out_dir, prefix=surname)
+            all_paths.extend(paths)
+            logger.info(
+                f"  → {carousel.speaker_kr}: {len(paths)}장 렌더링 완료"
+            )
     return all_paths
 
 
-def notify(image_paths: list[str], card_sets: list[CardSet]):
-    """카드 이미지를 텔레그램 채널로 전송한다.
+def notify(image_paths: list[str], batches: list[CarouselBatch]):
+    """캐러셀 이미지를 텔레그램 채널로 전송한다.
 
     TELEGRAM_BOT_TOKEN 환경 변수가 없으면 경고 로그만 출력하고 스킵한다.
-    카드셋별로 해당 이미지를 묶어 미디어 그룹(앨범)으로 전송한다.
+    드라이버별 캐러셀 단위로 미디어 그룹(앨범)으로 전송한다.
     """
     from config import TELEGRAM_BOT_TOKEN
-    from notifier.telegram_bot import send_card_set
+    from notifier.telegram_bot import send_carousel
 
     if not TELEGRAM_BOT_TOKEN:
         logger.warning(
@@ -113,81 +144,89 @@ def notify(image_paths: list[str], card_sets: list[CardSet]):
         logger.warning("전송할 이미지가 없습니다.")
         return
 
-    logger.info(f"텔레그램 전송 시작: {len(image_paths)}장 / {len(card_sets)}개 카드셋")
+    total_carousels = sum(len(b.carousels) for b in batches)
+    logger.info(f"텔레그램 전송 시작: {len(image_paths)}장 / {total_carousels}개 캐러셀")
 
-    # 카드셋별로 이미지 분배 (seq 기반 순서 보장)
-    # card_set.cards의 수량만큼 image_paths에서 순서대로 슬라이싱
+    # 드라이버별 캐러셀 단위로 이미지 분배
+    # 각 CarouselSet의 슬라이드 수(커버 1 + 본문 N + 출처 1)만큼 슬라이싱
     offset = 0
-    for card_set in card_sets:
-        count = len(card_set.cards)
-        chunk = image_paths[offset : offset + count]
-        offset += count
+    for batch in batches:
+        for carousel in batch.carousels:
+            count = carousel.total_slides  # 커버 + 본문 + 출처
+            chunk = image_paths[offset : offset + count]
+            offset += count
 
-        if not chunk:
-            logger.warning(
-                f"{card_set.gp_name} / {card_set.conference_type}: "
-                "대응하는 이미지가 없어 스킵합니다."
-            )
-            continue
+            if not chunk:
+                logger.warning(
+                    f"{carousel.speaker_kr} ({batch.gp_name}): "
+                    "대응하는 이미지가 없어 스킵합니다."
+                )
+                continue
 
-        success = send_card_set(chunk, card_set)
-        if success:
-            logger.info(
-                f"전송 완료: {card_set.gp_name} / {card_set.conference_type} "
-                f"({len(chunk)}장)"
-            )
-        else:
-            logger.error(
-                f"전송 실패: {card_set.gp_name} / {card_set.conference_type}"
-            )
+            success = send_carousel(chunk, carousel)
+            if success:
+                logger.info(
+                    f"전송 완료: {carousel.speaker_kr} / {batch.gp_name} "
+                    f"({len(chunk)}장)"
+                )
+            else:
+                logger.error(
+                    f"전송 실패: {carousel.speaker_kr} / {batch.gp_name}"
+                )
 
 
 def dry_run():
     """API 호출 없이 더미 데이터로 전체 흐름 테스트"""
     logger.info("=== 드라이런 모드 ===")
 
-    dummy_cards = [
-        CardContent(
-            speaker_kr="페르스타펜",
+    dummy_carousels = [
+        CarouselSet(
+            speaker="Max VERSTAPPEN",
+            speaker_kr="막스 페르스타펜",
             team="Red Bull",
-            main_copy="올해 차는 정말 완벽해",
-            sub_copy="시즌 초반 레드불의 압도적 퍼포먼스에 대한 자신감을 드러냈다",
-            quote_en="The car is absolutely incredible this year.",
-            card_type="info",
             gp_name="2026 일본 GP",
-            seq=1,
+            gp_name_en="Japanese Grand Prix",
+            conference_type="post-race",
+            date_iso="2026-03-29",
+            cover_headline="올해 차는 정말 완벽해",
+            slides=[
+                InterviewSlide(
+                    slide_num=2,
+                    text_kr="시즌 초반부터 레드불의 압도적인 퍼포먼스를 확인할 수 있었어요. 차가 모든 코너에서 완벽하게 반응했고, 팀 전체가 정말 잘 해줬습니다.",
+                    text_en="The car is absolutely incredible this year.",
+                ),
+            ],
+            total_cost_usd=0.0,
         ),
-        CardContent(
-            speaker_kr="노리스",
+        CarouselSet(
+            speaker="Lando NORRIS",
+            speaker_kr="란도 노리스",
             team="McLaren",
-            main_copy="포디엄? 당연하죠",
-            sub_copy="맥라렌의 꾸준한 상승세를 반영한 자신감 넘치는 발언",
-            quote_en="Podium? Of course, I'm in a McLaren.",
-            card_type="meme",
             gp_name="2026 일본 GP",
-            seq=2,
-        ),
-        CardContent(
-            speaker_kr="해밀턴",
-            team="Ferrari",
-            main_copy="페라리와 함께하는 매 순간이 특별하다",
-            sub_copy="새로운 팀에서의 적응을 마치고 본격적인 시즌을 시작하는 감회",
-            quote_en="Every moment with Ferrari feels special.",
-            card_type="info",
-            gp_name="2026 일본 GP",
-            seq=3,
+            gp_name_en="Japanese Grand Prix",
+            conference_type="post-race",
+            date_iso="2026-03-29",
+            cover_headline="포디엄? 당연하죠",
+            slides=[
+                InterviewSlide(
+                    slide_num=2,
+                    text_kr="맥라렌의 꾸준한 상승세를 반영한 자신감 넘치는 발언이었어요. 포디엄은 우리에겐 이제 당연한 목표가 됐습니다.",
+                    text_en="Podium? Of course, I'm in a McLaren.",
+                ),
+            ],
+            total_cost_usd=0.0,
         ),
     ]
 
-    card_set = CardSet(
+    batch = CarouselBatch(
         gp_name="Japanese Grand Prix",
         conference_type="post-race",
         date_iso="2026-03-29",
-        cards=dummy_cards,
+        carousels=dummy_carousels,
         total_cost_usd=0.0,
     )
 
-    paths = render([card_set])
+    paths = render([batch])
     logger.info(f"=== 드라이런 완료: {len(paths)}장 렌더링 ===")
     for p in paths:
         logger.info(f"  → {p}")
@@ -200,7 +239,30 @@ def main():
     parser.add_argument("--scrape-only", action="store_true", help="수집만 실행")
     parser.add_argument("--from-file", help="기존 JSON 파일로 처리")
     parser.add_argument("--dry-run", action="store_true", help="더미 데이터로 테스트")
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="data/drafts/ 의 기존 드래프트를 검수 후 렌더링",
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="검수 없이 자동 진행 (품질이 안정된 후 사용)",
+    )
     args = parser.parse_args()
+
+    # ── --review: 드래프트 검수 → 렌더링 ──────────────────────
+    if args.review:
+        from processor.review import review_drafts
+        logger.info("=== 검수 모드: data/drafts/ 파일 검수 시작 ===")
+        approved = review_drafts()
+        if not approved:
+            logger.info("승인된 드래프트 없음. 종료.")
+            sys.exit(0)
+        image_paths = render(approved)
+        notify(image_paths, approved)
+        logger.info(f"=== 검수 완료: {len(image_paths)}장 렌더링 ===")
+        return
 
     if args.dry_run:
         dry_run()
@@ -235,11 +297,38 @@ def main():
         logger.warning("카드 생성 결과 없음. 종료.")
         sys.exit(0)
 
+    # Step 2-b: 드래프트 저장
+    from processor.review import save_drafts, review_drafts
+    draft_paths = save_drafts(card_sets)
+    logger.info(f"드래프트 {len(draft_paths)}개 저장 완료: data/drafts/")
+
+    # --auto 이면 검수 생략
+    if args.auto:
+        logger.info("--auto 옵션: 검수 없이 자동 진행합니다.")
+        approved = card_sets
+    else:
+        # 검수 여부 확인
+        print()
+        try:
+            answer = input("검수를 진행하시겠습니까? (y/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+            print()
+
+        if answer == "y":
+            approved = review_drafts()
+            if not approved:
+                logger.info("승인된 드래프트 없음. 종료.")
+                sys.exit(0)
+        else:
+            logger.info("검수 없이 전체 카드셋을 렌더링합니다.")
+            approved = card_sets
+
     # Step 3: 렌더링
-    image_paths = render(card_sets)
+    image_paths = render(approved)
 
     # Step 4: 전송 (Phase 3)
-    notify(image_paths, card_sets)
+    notify(image_paths, approved)
 
     logger.info(f"=== 파이프라인 완료: {len(image_paths)}장 생성 ===")
 

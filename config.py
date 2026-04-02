@@ -24,10 +24,14 @@ IMAGE = {
 
 # 콘텐츠 설정
 CONTENT = {
-    "max_selected_quotes": 5,
-    "min_score_first_pass": 7,
-    "sonnet_trigger_score_variance": 4,
-    "tone_ratio": {"info": 0.9, "meme": 0.1},
+    # 캐러셀 선별 설정
+    "min_selected_qa": 3,          # 드라이버당 최소 선정 Q&A 수
+    "max_selected_qa": 5,          # 드라이버당 최대 선정 Q&A 수
+    "min_score_first_pass": 5,     # 1차 선별 최소 점수 (캐러셀은 기준 완화)
+    # 슬라이드 설정
+    "slide_target_chars": 180,     # 슬라이드 1장 권장 글자 수
+    "slide_max_chars": 210,        # 슬라이드 1장 최대 글자 수
+    "max_body_slides": 17,         # 본문 슬라이드 최대 장 수 (커버1 + 본문N + 출처1 ≤ 19)
 }
 
 # API 키 (환경 변수에서 로드)

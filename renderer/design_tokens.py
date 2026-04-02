@@ -34,6 +34,67 @@ CARD = {
     "height_portrait": 1350,
 }
 
+# ── 캐러셀 사이즈 (4:5 인스타그램 표준) ────────────────────────────────────
+CAROUSEL = {
+    "width":  1080,
+    "height": 1350,
+}
+
+# ── 2026 시즌 드라이버 번호 매핑 ────────────────────────────────────────────
+DRIVER_NUMBERS: dict[str, str] = {
+    # Red Bull
+    "MAX VERSTAPPEN":    "1",
+    "LIAM LAWSON":       "30",
+    # Ferrari
+    "CHARLES LECLERC":   "16",
+    "LEWIS HAMILTON":    "44",
+    # Mercedes
+    "GEORGE RUSSELL":    "63",
+    "KIMI ANTONELLI":    "12",
+    # McLaren
+    "LANDO NORRIS":      "4",
+    "OSCAR PIASTRI":     "81",
+    # Aston Martin
+    "FERNANDO ALONSO":   "14",
+    "LANCE STROLL":      "18",
+    # Alpine
+    "PIERRE GASLY":      "10",
+    "FRANCO COLAPINTO":  "43",
+    # Williams
+    "CARLOS SAINZ":      "55",
+    "ALEXANDER ALBON":   "23",
+    # RB
+    "ISACK HADJAR":      "6",
+    "ARVID LINDBLAD":    "8",
+    # Haas
+    "ESTEBAN OCON":      "31",
+    "OLIVER BEARMAN":    "87",
+    # Sauber/Audi
+    "NICO HULKENBERG":   "27",
+    "GABRIEL BORTOLETO": "5",
+    # 한글 이름 → 번호 매핑 (추가)
+    "막스 페르스타펜":    "1",
+    "리암 로슨":          "30",
+    "샤를 르클레르":      "16",
+    "루이스 해밀턴":      "44",
+    "조지 러셀":          "63",
+    "키미 안토넬리":      "12",
+    "란도 노리스":        "4",
+    "오스카 피아스트리":  "81",
+    "페르난도 알론소":    "14",
+    "랜스 스트롤":        "18",
+    "피에르 가슬리":      "10",
+    "프랑코 콜라핀토":    "43",
+    "카를로스 사인츠":    "55",
+    "알렉산더 알본":      "23",
+    "이삭 하자르":        "6",
+    "아르비드 린드블라드": "8",
+    "에스테반 오콘":      "31",
+    "올리버 베어먼":      "87",
+    "니코 휠켄베르크":    "27",
+    "가브리엘 보르톨레토": "5",
+}
+
 # ── 그리드 / 간격 ───────────────────────────────────────────────────────────
 LAYOUT = {
     # 안전 영역 (인스타그램 UI 잘림 방지)
@@ -169,6 +230,107 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> Tuple[int, int, int, int]:
     """
     r, g, b = hex_to_rgb(hex_color)
     return (r, g, b, alpha)
+
+
+def make_vertical_gradient(
+    width: int,
+    height: int,
+    color_top: Tuple[int, int, int],
+    color_bottom: Tuple[int, int, int],
+) -> "Image.Image":
+    """
+    상단→하단 수직 그라데이션 이미지를 생성한다.
+
+    Args:
+        width: 이미지 너비 (px)
+        height: 이미지 높이 (px)
+        color_top: 상단 RGB 튜플
+        color_bottom: 하단 RGB 튜플
+
+    Returns:
+        PIL.Image: RGB 모드 그라데이션 이미지
+    """
+    from PIL import Image as _Image
+
+    img = _Image.new("RGB", (width, height))
+    pixels = img.load()
+    r0, g0, b0 = color_top
+    r1, g1, b1 = color_bottom
+    for y in range(height):
+        t = y / (height - 1)
+        r = int(r0 + (r1 - r0) * t)
+        g = int(g0 + (g1 - g0) * t)
+        b = int(b0 + (b1 - b0) * t)
+        for x in range(width):
+            pixels[x, y] = (r, g, b)
+    return img
+
+
+def lighten_color(
+    rgb: Tuple[int, int, int],
+    factor: float = 0.15,
+) -> Tuple[int, int, int]:
+    """
+    RGB 컬러를 factor 비율만큼 밝게 한다 (흰색 방향으로 선형 보간).
+
+    Args:
+        rgb: (r, g, b) 튜플
+        factor: 0.0(변화 없음) ~ 1.0(완전 흰색)
+
+    Returns:
+        밝아진 (r, g, b) 튜플
+    """
+    r, g, b = rgb
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return (r, g, b)
+
+
+def darken_color(
+    rgb: Tuple[int, int, int],
+    factor: float = 0.3,
+) -> Tuple[int, int, int]:
+    """
+    RGB 컬러를 factor 비율만큼 어둡게 한다 (검정 방향으로 선형 보간).
+
+    Args:
+        rgb: (r, g, b) 튜플
+        factor: 0.0(변화 없음) ~ 1.0(완전 검정)
+
+    Returns:
+        어두워진 (r, g, b) 튜플
+    """
+    r, g, b = rgb
+    r = int(r * (1.0 - factor))
+    g = int(g * (1.0 - factor))
+    b = int(b * (1.0 - factor))
+    return (r, g, b)
+
+
+def get_driver_number(driver_name: str) -> str:
+    """
+    드라이버 이름(영문 또는 한글)으로 차량 번호를 반환한다.
+
+    Args:
+        driver_name: 드라이버 이름 (영문 대문자 또는 한글)
+
+    Returns:
+        차량 번호 문자열. 미등록 드라이버는 빈 문자열 반환.
+    """
+    # 정확한 매칭
+    upper = driver_name.upper()
+    if upper in DRIVER_NUMBERS:
+        return DRIVER_NUMBERS[upper]
+    if driver_name in DRIVER_NUMBERS:
+        return DRIVER_NUMBERS[driver_name]
+
+    # 성(성만) 부분 매칭
+    for key, num in DRIVER_NUMBERS.items():
+        parts = key.upper().split()
+        if parts and parts[-1] in upper:
+            return num
+    return ""
 
 
 if __name__ == "__main__":
