@@ -289,22 +289,34 @@ def _draw_team_chip(
 
 # ── 커버 카드 ────────────────────────────────────────────────────────────────
 
+_CONFERENCE_TYPE_KR: dict[str, str] = {
+    "post-race": "결승 인터뷰",
+    "post-qualifying": "예선 인터뷰",
+    "qualifying": "예선 인터뷰",
+    "friday": "금요일 기자회견",
+    "thursday": "목요일 기자회견",
+    "pre-race": "레이스 전 기자회견",
+}
+
+
 def render_cover(
     driver_kr: str,
     team: str,
     car_number: str = "",
     gp_name: str = "",
     summary: str = "",
+    conference_type: str = "",
 ) -> Image.Image:
     """
     1장 커버 카드를 렌더링한다.
 
     Args:
-        driver_kr:  드라이버 한글 이름 (예: "루이스 해밀턴")
-        team:       팀 표시명 (예: "Ferrari")
-        car_number: 차량 번호 문자열. 빈 문자열이면 자동 조회.
-        gp_name:    GP 이름 (예: "2026 일본 GP")
-        summary:    핵심 한 줄 요약 (예: "새 차, 완전히 다른 느낌")
+        driver_kr:       드라이버 한글 이름 (예: "루이스 해밀턴")
+        team:            팀 표시명 (예: "Ferrari")
+        car_number:      차량 번호 문자열. 빈 문자열이면 자동 조회.
+        gp_name:         GP 이름 (예: "2026 일본 GP")
+        summary:         핵심 한 줄 요약 (예: "새 차, 완전히 다른 느낌")
+        conference_type: 기자회견 종류 (예: "post-race", "post-qualifying")
 
     Returns:
         PIL.Image (RGBA, 1080×1350)
@@ -357,13 +369,16 @@ def render_cover(
     chip_ex, chip_ey = _draw_team_chip(draw, tc["short_name"], accent_rgb, chip_x, top_y)
 
     if gp_name:
+        # GP명 + 기자회견 종류를 함께 표시
+        conf_label = _CONFERENCE_TYPE_KR.get(conference_type, "") if conference_type else ""
+        gp_display = f"{gp_name}  {conf_label}".rstrip() if conf_label else gp_name
         gp_font = _font("pretendard_medium", 26)
         gp_x    = chip_ex + 16
-        gp_bbox = draw.textbbox((0, 0), gp_name, font=gp_font)
+        gp_bbox = draw.textbbox((0, 0), gp_display, font=gp_font)
         gp_th   = gp_bbox[3] - gp_bbox[1]
         gp_y    = top_y + (chip_ey - top_y - gp_th) // 2
         draw.text(
-            (gp_x, gp_y), gp_name, font=gp_font,
+            (gp_x, gp_y), gp_display, font=gp_font,
             fill=(*hex_to_rgb(tc["text_secondary"]), 200),
         )
 
@@ -1178,13 +1193,14 @@ def render_carousel(carousel_data: dict) -> List[Image.Image]:
     Returns:
         list[Image.Image]: [커버, Q/A 슬라이드들..., 출처]
     """
-    driver_kr    = carousel_data.get("driver_kr", "")
-    team         = carousel_data.get("team", "Red Bull")
-    car_number   = carousel_data.get("car_number", "")
-    gp_name      = carousel_data.get("gp_name", "")
-    summary      = carousel_data.get("summary", "")
-    date         = carousel_data.get("date", "")
-    source_text  = carousel_data.get("source_text", "FIA Official Press Conference")
+    driver_kr       = carousel_data.get("driver_kr", "")
+    team            = carousel_data.get("team", "Red Bull")
+    car_number      = carousel_data.get("car_number", "")
+    gp_name         = carousel_data.get("gp_name", "")
+    conference_type = carousel_data.get("conference_type", "")
+    summary         = carousel_data.get("summary", "")
+    date            = carousel_data.get("date", "")
+    source_text     = carousel_data.get("source_text", "FIA Official Press Conference")
 
     # Q/A 분리 모드 vs 레거시 모드 판별
     slides_data  = carousel_data.get("slides", [])
@@ -1202,7 +1218,7 @@ def render_carousel(carousel_data: dict) -> List[Image.Image]:
     images: List[Image.Image] = []
 
     # 1. 커버 카드
-    images.append(render_cover(driver_kr, team, car_number, gp_name, summary))
+    images.append(render_cover(driver_kr, team, car_number, gp_name, summary, conference_type))
 
     if slides_data:
         # Q/A 분리 모드: slide_type에 따라 다른 렌더러 호출

@@ -69,10 +69,23 @@ def _chunk_list(lst: list, size: int) -> list[list]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
+_CONFERENCE_TYPE_KR: dict[str, str] = {
+    "post-race": "결승 인터뷰",
+    "post-qualifying": "예선 인터뷰",
+    "qualifying": "예선 인터뷰",
+    "friday": "금요일 기자회견",
+    "thursday": "목요일 기자회견",
+    "pre-race": "레이스 전 기자회견",
+}
+
+
 def _build_caption(carousel: CarouselSet, card_index: int, total: int) -> str:
-    """카드 캡션 포맷: "{speaker_kr} 인터뷰 | {gp_name}\n{card_index}/{total}"."""
+    """카드 캡션 포맷: "{speaker_kr} {conference_type_kr} | {gp_name}\n{card_index}/{total}"."""
+    conf_kr = _CONFERENCE_TYPE_KR.get(
+        carousel.conference_type, f"{carousel.conference_type} 인터뷰"
+    )
     return (
-        f"{carousel.speaker_kr} 인터뷰 | {carousel.gp_name}\n"
+        f"{carousel.speaker_kr} {conf_kr} | {carousel.gp_name}\n"
         f"{card_index}/{total}"
     )
 

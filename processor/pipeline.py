@@ -34,12 +34,14 @@ from models import (
     CarouselBatch,
     CarouselSet,
     DRIVER_FULLNAME_KR,
+    DRIVER_TEAM_MAP,
     InterviewSlide,
     MAX_BODY_SLIDES,
     PressConference,
     ScoredStatement,
     SelectedQuote,
     get_team_for_driver,
+    get_team_for_speaker,
 )
 from processor.cost_guard import CostGuard
 
@@ -62,9 +64,10 @@ _SLIDE_TARGET_CHARS = 180
 _SLIDE_MAX_CHARS = 210
 
 # Q/A 분리 슬라이드: 답변 분할 글자 수
-_ANSWER_TARGET_CHARS = 120
-_ANSWER_MAX_CHARS = 150
-_ANSWER_MIN_CHARS = 30   # 이보다 짧으면 이전 슬라이드에 합침
+# migrate_drafts.py와 동일한 기준 사용 (200/280/80)
+_ANSWER_TARGET_CHARS = 200
+_ANSWER_MAX_CHARS = 280
+_ANSWER_MIN_CHARS = 80   # 이보다 짧으면 이전 슬라이드에 합침
 _MAX_TOTAL_SLIDES = 20   # 커버(1) + Q/A 본문 + 출처(1) 합계 최대
 
 
@@ -394,7 +397,9 @@ def _second_pass_driver(
     if raw is None:
         logger.warning("[second_pass] %s API 오류, 상위 3개 자동 선정", driver)
         top3 = sorted_scored[:3]
-        return [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
+        fallback = [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
+        fallback.sort(key=lambda qa: qa["seq"])
+        return fallback
 
     try:
         json_str = _extract_json(raw)
@@ -409,12 +414,16 @@ def _second_pass_driver(
             qa = id_to_qa.get(sid)
             if qa:
                 selected_qa.append(qa)
+        # 원래 발언 순서(seq)대로 정렬하여 Q→A 순서가 유지되도록 보장
+        selected_qa.sort(key=lambda qa: qa["seq"])
         return selected_qa
 
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning("[second_pass] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
         top3 = sorted_scored[:3]
-        return [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
+        fallback = [seq_to_qa[s.seq] for s in top3 if s.seq in seq_to_qa]
+        fallback.sort(key=lambda qa: qa["seq"])
+        return fallback
 
 
 # ──────────────────────────────────────────────
@@ -962,7 +971,7 @@ def _process_driver(
                 driver, total_slides, len(slides))
 
     # 팀 / GP 이름
-    team = get_team_for_driver(driver)
+    team = get_team_for_speaker(driver)
     gp_display = _format_gp_display(conference.gp_name, conference.date_iso)
 
     carousel = CarouselSet(
@@ -1037,8 +1046,32 @@ def run_pipeline(
             total_cost_usd=guard.gp_total,
         )
 
-    # 처리할 드라이버 필터링
-    drivers_to_process = list(qa_by_driver.keys())
+    # 처리할 발언자 필터링:
+    #   - 팀 매핑이 있는 발언자(드라이버 + 팀 스태프)만 처리
+    #   - friday 기자회견의 경우 드라이버가 아닌 발언자(팀 대표 등)는 제외
+    #     (friday PC는 드라이버 대상이므로 팀 대표 발언은 콘텐츠에 맞지 않음)
+    is_friday = conference.conference_type == "friday"
+
+    def _should_process(speaker: str) -> bool:
+        if not get_team_for_speaker(speaker):
+            return False  # 팀 매핑 실패 → 완전 미인식 발언자
+        if is_friday and speaker not in DRIVER_TEAM_MAP:
+            # friday PC에서 드라이버가 아닌 발언자(팀 대표 등) 제외
+            # 성 기반 퍼지 매칭도 체크
+            speaker_upper = speaker.upper()
+            is_driver = any(
+                name.split()[-1].upper() in speaker_upper
+                for name in DRIVER_TEAM_MAP
+            )
+            if not is_driver:
+                return False
+        return True
+
+    drivers_to_process = [d for d in qa_by_driver.keys() if _should_process(d)]
+    skipped = set(qa_by_driver.keys()) - set(drivers_to_process)
+    if skipped:
+        logger.info("[pipeline] 발언자 제외 (팀 미인식 또는 friday 비드라이버): %s", skipped)
+
     if target_drivers:
         drivers_to_process = [
             d for d in drivers_to_process

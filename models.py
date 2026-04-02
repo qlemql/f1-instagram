@@ -308,6 +308,9 @@ DRIVER_TEAM_MAP: dict[str, str] = {
     # Sauber/Audi
     "Nico HULKENBERG": "Sauber/Audi",
     "Gabriel BORTOLETO": "Sauber/Audi",
+    # Cadillac
+    "Valtteri BOTTAS":   "Cadillac",
+    "Sergio PEREZ":      "Cadillac",
 }
 
 
@@ -325,3 +328,256 @@ def get_team_for_driver(speaker: str) -> str:
             return team
 
     return ""
+
+
+# ─────────────────────────────────────────────
+# 5. 팀 스태프 → 팀 매핑 (2026 시즌)
+# ─────────────────────────────────────────────
+
+TEAM_STAFF_MAP: dict[str, dict] = {
+    # ── Red Bull ──────────────────────────────
+    # TP: Laurent Mekies (크리스찬 호너 2025 중반 경질 후 승계)
+    # TD: Pierre Waché
+    "Red Bull": {
+        "team_principal": "Laurent MEKIES",
+        "technical_director": "Pierre WACHE",
+        "staff": [
+            "Laurent MEKIES",   # Team Principal & CEO (2025.07~)
+            "Pierre WACHE",     # Technical Director
+        ],
+    },
+    # ── Ferrari ──────────────────────────────
+    # TP: Frédéric Vasseur
+    # Chassis TD: Loïc Serra  /  PU TD: Enrico Gualtieri
+    "Ferrari": {
+        "team_principal": "Frederic VASSEUR",
+        "technical_director": "Loic SERRA",
+        "staff": [
+            "Frederic VASSEUR",  # Team Principal & Managing Director
+            "Loic SERRA",        # Chassis Technical Director
+            "Enrico GUALTIERI",  # Power Unit Technical Director
+        ],
+    },
+    # ── Mercedes ──────────────────────────────
+    # TP: Toto Wolff  /  TD: James Allison
+    "Mercedes": {
+        "team_principal": "Toto WOLFF",
+        "technical_director": "James ALLISON",
+        "staff": [
+            "Toto WOLFF",        # Team Principal & CEO
+            "James ALLISON",     # Technical Director
+            "Bradley LORD",      # Deputy Team Principal
+        ],
+    },
+    # ── McLaren ──────────────────────────────
+    # TP: Andrea Stella  /  CTO: Peter Prodromou  /  Chief Designer: Rob Marshall
+    "McLaren": {
+        "team_principal": "Andrea STELLA",
+        "technical_director": "Peter PRODROMOU",
+        "staff": [
+            "Andrea STELLA",    # Team Principal
+            "Peter PRODROMOU",  # Technical Director
+            "Rob MARSHALL",     # Chief Designer
+        ],
+    },
+    # ── Aston Martin ──────────────────────────
+    # TP: Adrian Newey (2026~)  /  CSO: Andy Cowell
+    "Aston Martin": {
+        "team_principal": "Adrian NEWEY",
+        "technical_director": "Adrian NEWEY",
+        "staff": [
+            "Adrian NEWEY",    # Team Principal & Managing Technical Partner (2026~)
+            "Andy COWELL",     # Chief Strategy Officer (전 Team Principal)
+        ],
+    },
+    # ── Alpine ──────────────────────────────
+    # 공식 TP 없음 — Flavio Briatore(Executive Advisor) + Steve Nielsen(Managing Director)
+    # ETD: David Sanchez
+    "Alpine": {
+        "team_principal": "Flavio BRIATORE",
+        "technical_director": "David SANCHEZ",
+        "staff": [
+            "Flavio BRIATORE",  # Executive Advisor (실질 수장)
+            "Steve NIELSEN",    # Managing Director
+            "David SANCHEZ",    # Executive Technical Director
+        ],
+    },
+    # ── Williams ──────────────────────────────
+    # TP: James Vowles  /  CTO: Pat Fry
+    "Williams": {
+        "team_principal": "James VOWLES",
+        "technical_director": "Pat FRY",
+        "staff": [
+            "James VOWLES",  # Team Principal
+            "Pat FRY",       # Chief Technical Officer
+        ],
+    },
+    # ── RB (Racing Bulls) ──────────────────────
+    # TP: Alan Permane (2026.01~, 메키에스 레드불 승격 후)
+    # TD: Dan Fallows  /  CTO: Tim Goss
+    "RB": {
+        "team_principal": "Alan PERMANE",
+        "technical_director": "Dan FALLOWS",
+        "staff": [
+            "Alan PERMANE",  # Team Principal (2026.01~)
+            "Dan FALLOWS",   # Technical Director
+            "Tim GOSS",      # Chief Technical Officer
+        ],
+    },
+    # ── Haas ──────────────────────────────
+    # TP: Ayao Komatsu  /  TD: Andrea De Zordo
+    "Haas": {
+        "team_principal": "Ayao KOMATSU",
+        "technical_director": "Andrea DE ZORDO",
+        "staff": [
+            "Ayao KOMATSU",      # Team Principal
+            "Andrea DE ZORDO",   # Technical Director
+        ],
+    },
+    # ── Sauber/Audi ──────────────────────────
+    # Jonathan Wheatley 2026 개막 2라운드 후 사임 → Mattia Binotto가 TP 겸임
+    # TD: James Key
+    "Sauber/Audi": {
+        "team_principal": "Mattia BINOTTO",
+        "technical_director": "James KEY",
+        "staff": [
+            "Mattia BINOTTO",    # Head of Audi F1 Project + Team Principal (겸임, 2026~)
+            "James KEY",         # Technical Director
+        ],
+    },
+    # ── Cadillac ──────────────────────────────
+    # TP: Graeme Lowdon  /  CTO: Nick Chester  /  Exec. Consultant: Pat Symonds
+    "Cadillac": {
+        "team_principal": "Graeme LOWDON",
+        "technical_director": "Nick CHESTER",
+        "staff": [
+            "Graeme LOWDON",  # Team Principal
+            "Nick CHESTER",   # Chief Technical Officer
+            "Pat SYMONDS",    # Executive Engineering Consultant
+        ],
+    },
+}
+
+# ─────────────────────────────────────────────
+# 5-b. 스태프 이름 → 팀 역방향 매핑 (자동 생성)
+# ─────────────────────────────────────────────
+
+STAFF_TEAM_MAP: dict[str, str] = {}
+for _team, _info in TEAM_STAFF_MAP.items():
+    for _name in _info["staff"]:
+        STAFF_TEAM_MAP[_name] = _team
+
+# ─────────────────────────────────────────────
+# 5-c. 팀 스태프 한국어 표기 (성 단독, 인스타그램 게시물용)
+# ─────────────────────────────────────────────
+
+STAFF_NAME_KR: dict[str, str] = {
+    # Red Bull
+    "Laurent MEKIES":    "메키에스",
+    "Pierre WACHE":      "바셰",
+    # Ferrari
+    "Frederic VASSEUR":  "바쉐르",
+    "Loic SERRA":        "세라",
+    "Enrico GUALTIERI":  "과리에리",
+    # Mercedes
+    "Toto WOLFF":        "볼프",
+    "James ALLISON":     "앨리슨",
+    "Bradley LORD":      "로드",
+    # McLaren
+    "Andrea STELLA":     "스텔라",
+    "Peter PRODROMOU":   "프로드로무",
+    "Rob MARSHALL":      "마샬",
+    # Aston Martin
+    "Adrian NEWEY":      "뉴이",
+    "Andy COWELL":       "카우엘",
+    # Alpine
+    "Flavio BRIATORE":   "브리아토레",
+    "Steve NIELSEN":     "닐슨",
+    "David SANCHEZ":     "산체스",
+    # Williams
+    "James VOWLES":      "바울스",
+    "Pat FRY":           "프라이",
+    # RB
+    "Alan PERMANE":      "퍼먼",
+    "Dan FALLOWS":       "팔로스",
+    "Tim GOSS":          "고스",
+    # Haas
+    "Ayao KOMATSU":      "코마쓰",
+    "Andrea DE ZORDO":   "데 조르도",
+    # Sauber/Audi
+    "Mattia BINOTTO":    "비노토",
+    "James KEY":         "키",
+    # Cadillac
+    "Graeme LOWDON":     "로든",
+    "Nick CHESTER":      "체스터",
+    "Pat SYMONDS":       "사이먼즈",
+}
+
+
+def get_team_for_speaker(speaker: str) -> str:
+    """드라이버 또는 팀 스태프 이름으로 팀 조회. 매칭 실패 시 빈 문자열 반환.
+
+    탐색 순서:
+      1) 드라이버 정확 매칭 (DRIVER_TEAM_MAP)
+      2) 스태프 정확 매칭 (STAFF_TEAM_MAP)
+      3) 드라이버 성(Surname) 퍼지 매칭
+      4) 스태프 성(Surname) 퍼지 매칭
+    """
+    # 1) 드라이버 정확 매칭
+    if speaker in DRIVER_TEAM_MAP:
+        return DRIVER_TEAM_MAP[speaker]
+
+    # 2) 스태프 정확 매칭
+    if speaker in STAFF_TEAM_MAP:
+        return STAFF_TEAM_MAP[speaker]
+
+    speaker_upper = speaker.upper()
+
+    # 3) 드라이버 성 퍼지 매칭
+    for name, team in DRIVER_TEAM_MAP.items():
+        surname = name.split()[-1].upper()
+        if surname in speaker_upper:
+            return team
+
+    # 4) 스태프 성 퍼지 매칭
+    for name, team in STAFF_TEAM_MAP.items():
+        surname = name.split()[-1].upper()
+        if surname and surname in speaker_upper:
+            return team
+
+    return ""
+
+
+def get_speaker_name_kr(speaker: str) -> str:
+    """드라이버 또는 팀 스태프 이름(영문)으로 한국어 성 표기를 반환한다.
+
+    Args:
+        speaker: 영문 이름 (예: "Toto WOLFF", "Max VERSTAPPEN")
+
+    Returns:
+        한국어 성 표기 (예: "볼프", "베르스타펜").
+        매칭 실패 시 원본 이름 반환.
+    """
+    # 1) 드라이버 정확 매칭
+    if speaker in DRIVER_NAME_KR:
+        return DRIVER_NAME_KR[speaker]
+
+    # 2) 스태프 정확 매칭
+    if speaker in STAFF_NAME_KR:
+        return STAFF_NAME_KR[speaker]
+
+    speaker_upper = speaker.upper()
+
+    # 3) 드라이버 성 퍼지 매칭
+    for name, kr in DRIVER_NAME_KR.items():
+        surname = name.split()[-1].upper()
+        if surname in speaker_upper:
+            return kr
+
+    # 4) 스태프 성 퍼지 매칭
+    for name, kr in STAFF_NAME_KR.items():
+        surname = name.split()[-1].upper()
+        if surname and surname in speaker_upper:
+            return kr
+
+    return speaker

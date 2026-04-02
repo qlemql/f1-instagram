@@ -105,6 +105,7 @@ def render(batches: list[CarouselBatch]) -> list[str]:
                 "team": carousel.team,
                 "car_number": "",
                 "gp_name": carousel.gp_name,
+                "conference_type": carousel.conference_type,
                 "summary": carousel.cover_headline,
                 "slides": [{"text_kr": s.text_kr, "slide_type": s.slide_type} for s in carousel.slides],
                 "date": carousel.date_iso,
