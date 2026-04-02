@@ -101,6 +101,7 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="--dry-run"
           else
+            ARGS="--auto"
             if [ -n "${{ inputs.url }}" ]; then
               ARGS="$ARGS --url '${{ inputs.url }}'"
             fi
