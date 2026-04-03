@@ -37,10 +37,12 @@ if str(_PROJECT_DIR) not in sys.path:
 from renderer.design_tokens import (
     ALPHA,
     CAROUSEL,
+    CAROUSEL_TYPO,
     COLORS,
     FONT_SIZE,
     FONTS,
     LAYOUT,
+    LINE_SPACING,
     darken_color,
     get_driver_number,
     get_team_color,
@@ -248,7 +250,8 @@ def _draw_watermark(
     fill: tuple = (255, 255, 255, 80),
 ) -> None:
     """우측 하단 워터마크를 그린다."""
-    font = _font("pretendard_regular", 22)
+    _cw = CAROUSEL_TYPO["cover_watermark"]
+    font = _font(_cw["font"], _cw["size"])
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     draw.text(
@@ -269,8 +272,11 @@ def _draw_team_chip(
     """
     팀명 칩(둥근 사각형 + 팀 컬러)을 그리고 (우측 끝 x, 하단 y)를 반환한다.
     """
-    font = _font("pretendard_bold", 22)
+    font = _font("pretendard_bold", FONT_SIZE["body"])
     bbox = draw.textbbox((0, 0), team_short, font=font)
+    # bbox 오프셋 보정 (폰트에 따라 (0,0)에서 시작하지 않을 수 있음)
+    tx_off = bbox[0]
+    ty_off = bbox[1]
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     pad_x, pad_y = 18, 10
@@ -282,8 +288,10 @@ def _draw_team_chip(
         radius=6,
         fill=(*accent_rgb, 220),
     )
-    # 팀명 텍스트
-    draw.text((x + pad_x, y + pad_y), team_short, font=font, fill=(255, 255, 255, 255))
+    # 팀명 텍스트 — bbox 오프셋 보정으로 칩 내부 정중앙 배치
+    text_x = x + pad_x - tx_off
+    text_y = y + pad_y - ty_off
+    draw.text((text_x, text_y), team_short, font=font, fill=(255, 255, 255, 255))
     return (x + chip_w, y + chip_h)
 
 
@@ -346,21 +354,23 @@ def render_cover(
     # ── 상단 팀 컬러 바 ─────────────────────────────────────────────────────
     _draw_team_bar(draw, accent_rgb, position="top", height=ACCENT_H)
 
-    # ── 차 번호: 초대형 반투명 타이포 (배경 중앙 레이어) ────────────────────
+    # ── 차 번호: 초대형 반투명 타이포 (배경 우하단 레이어) ────────────────────
     # 레이어 순서: 배경 → 차 번호(반투명) → 나머지 텍스트
+    # 드라이버명과 겹치지 않도록 우하단 배치, 일부가 캔버스 밖으로 나감
     if car_number:
-        num_font = _font("bebas_neue", 700)
+        _cn = CAROUSEL_TYPO["cover_number"]
+        num_font = _font(_cn["font"], _cn["size"])
         num_bbox = draw.textbbox((0, 0), car_number, font=num_font)
         nw = num_bbox[2] - num_bbox[0]
         nh = num_bbox[3] - num_bbox[1]
-        # 이미지 정중앙 배치 (드라이버명보다 먼저 그려서 뒤에 깔림)
-        nx = (W - nw) // 2
-        ny = (H - nh) // 2 - 40
+        # 우하단 배치: 드라이버명 아래 영역, 우측 정렬
+        nx = W - nw - PAD_H + 20
+        ny = H // 2 + 40
         draw.text(
             (nx, ny),
             car_number,
             font=num_font,
-            fill=(*accent_rgb, 32),   # ~12% 투명도 — 배경에 녹아드는 수준
+            fill=(*accent_rgb, 22),   # ~8% 투명도 — 더 은은하게
         )
 
     # ── 상단 영역: 팀 칩 + GP 정보 ─────────────────────────────────────────
@@ -372,7 +382,8 @@ def render_cover(
         # GP명 + 기자회견 종류를 함께 표시
         conf_label = _CONFERENCE_TYPE_KR.get(conference_type, "") if conference_type else ""
         gp_display = f"{gp_name}  {conf_label}".rstrip() if conf_label else gp_name
-        gp_font = _font("pretendard_medium", 26)
+        _cg = CAROUSEL_TYPO["cover_gp"]
+        gp_font = _font(_cg["font"], _cg["size"])
         gp_x    = chip_ex + 16
         gp_bbox = draw.textbbox((0, 0), gp_display, font=gp_font)
         gp_th   = gp_bbox[3] - gp_bbox[1]
@@ -383,13 +394,14 @@ def render_cover(
         )
 
     # ── 드라이버 풀네임 (Pretendard Bold — Bebas Neue는 한글 미지원) ─────────
+    _cd = CAROUSEL_TYPO["cover_driver"]
     name_font, _ = _fit_font(
-        draw, "pretendard_bold", driver_kr,
+        draw, _cd["font"], driver_kr,
         max_width=CONTENT_W,
         max_height=200,
-        start_size=120,
-        min_size=60,
-        line_spacing=6,
+        start_size=_cd["max"],
+        min_size=_cd["min"],
+        line_spacing=_cd["spacing"],
     )
     name_y = H // 2 - 110
     name_end_y = _draw_multiline(
@@ -397,7 +409,7 @@ def render_cover(
         x=PAD_H, y=name_y,
         max_width=CONTENT_W,
         fill=(255, 255, 255, 255),
-        line_spacing=6,
+        line_spacing=_cd["spacing"],
         align="left",
     )
 
@@ -410,7 +422,8 @@ def render_cover(
     )
 
     # ── 스와이프 유도 텍스트 y좌표 미리 계산 (오버플로 방어용) ─────────────
-    swipe_font = _font("pretendard_medium", 26)
+    _cs = CAROUSEL_TYPO["cover_swipe"]
+    swipe_font = _font(_cs["font"], _cs["size"])
     swipe_text = "인터뷰 전문 →"
     swipe_bbox = draw.textbbox((0, 0), swipe_text, font=swipe_font)
     swipe_h    = swipe_bbox[3] - swipe_bbox[1]
@@ -421,13 +434,14 @@ def render_cover(
     if summary:
         # 따옴표 문자 제거 후 출력
         summary_clean = summary.strip().strip('"').strip("'").strip('\u201c').strip('\u201d')
+        _csm = CAROUSEL_TYPO["cover_summary"]
         sum_font, sum_size = _fit_font(
-            draw, "pretendard_bold", summary_clean,
+            draw, _csm["font"], summary_clean,
             max_width=CONTENT_W,
             max_height=220,
-            start_size=52,
-            min_size=28,
-            line_spacing=16,
+            start_size=_csm["max"],
+            min_size=_csm["min"],
+            line_spacing=_csm["spacing"],
         )
         sum_y = divider_y + 32
         sum_end_y = _draw_multiline(
@@ -435,20 +449,21 @@ def render_cover(
             x=PAD_H, y=sum_y,
             max_width=CONTENT_W,
             fill=(255, 255, 255, 240),
-            line_spacing=16,
+            line_spacing=_csm["spacing"],
             align="left",
         )
 
         # 요약 렌더링 후 y좌표가 스와이프 텍스트에 근접하면 폰트 축소 후 재렌더링
+        _csr = CAROUSEL_TYPO["cover_summary_reduced"]
         if sum_end_y + 40 > swipe_y:
-            reduced_size = max(sum_size - 8, 22)
+            reduced_size = max(sum_size - 8, _csr["min"])
             sum_font, _ = _fit_font(
-                draw, "pretendard_bold", summary_clean,
+                draw, _csr["font"], summary_clean,
                 max_width=CONTENT_W,
                 max_height=swipe_y - sum_y - 40,
                 start_size=reduced_size,
-                min_size=22,
-                line_spacing=14,
+                min_size=_csr["min"],
+                line_spacing=_csr["spacing"],
             )
             # 배경 패치로 이전 텍스트 덮기
             draw.rectangle(
@@ -460,7 +475,7 @@ def render_cover(
                 x=PAD_H, y=sum_y,
                 max_width=CONTENT_W,
                 fill=(255, 255, 255, 240),
-                line_spacing=14,
+                line_spacing=_csr["spacing"],
                 align="left",
             )
     draw.text(
@@ -472,7 +487,8 @@ def render_cover(
 
     # ── 워터마크 ─────────────────────────────────────────────────────────────
     # 스와이프 텍스트 우측에 같은 높이로 배치
-    wm_font = _font("pretendard_regular", 22)
+    _cw = CAROUSEL_TYPO["cover_watermark"]
+    wm_font = _font(_cw["font"], _cw["size"])
     wm_bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=wm_font)
     wm_w    = wm_bbox[2] - wm_bbox[0]
     wm_h    = wm_bbox[3] - wm_bbox[1]
@@ -548,8 +564,10 @@ def render_interview_slide(
     _draw_team_bar(draw, accent_rgb, position="top", height=ACCENT_H)
 
     # ── 상단 헤더: 드라이버명(작게) + dot 페이지 인디케이터 ─────────────────
+    _ih = CAROUSEL_TYPO["interview_header"]
+    _id = CAROUSEL_TYPO["interview_dot"]
     header_y    = ACCENT_H + 22
-    driver_font = _font("pretendard_medium", 24)
+    driver_font = _font(_ih["font"], _ih["size"])
     draw.text(
         (PAD_H, header_y),
         driver_kr,
@@ -562,7 +580,7 @@ def render_interview_slide(
     # page_num: 커버=1, 본문 시작=2 / total_pages: 커버+본문+출처
     dot_filled   = "\u25cf"   # ●
     dot_empty    = "\u25cb"   # ○
-    dot_font     = _font("pretendard_regular", 18)
+    dot_font     = _font(_id["font"], _id["size"])
     # 본문 슬라이드 수 = total_pages - 2 (커버, 출처 제외)
     body_count   = total_pages - 2
     current_body = page_num - 1   # 본문 1번째 = 1
@@ -598,7 +616,8 @@ def render_interview_slide(
 
     # ── 큰 따옴표 장식 ───────────────────────────────────────────────────────
     # 텍스트보다 먼저 그려서 텍스트가 그 위에 올라오도록 (배경 레이어)
-    quote_deco_font = _font("bebas_neue", 200)
+    _iq = CAROUSEL_TYPO["interview_quote"]
+    quote_deco_font = _font(_iq["font"], _iq["size"])
     q_bbox          = draw.textbbox((0, 0), "\u201c", font=quote_deco_font)
     q_w             = q_bbox[2] - q_bbox[0]
     q_h             = q_bbox[3] - q_bbox[1]
@@ -617,18 +636,28 @@ def render_interview_slide(
     # 따옴표 우측으로 충분히 밀어서 첫 글자 가림 방지 (+34px indent)
     text_indent = q_w + 24          # 따옴표 너비 + 여유
     text_x      = PAD_H + text_indent
-    text_y      = header_line_y + 52
+    text_top    = header_line_y + 52
     text_w      = CONTENT_W - text_indent
-    text_max_h  = H - text_y - ACCENT_H - 100
+    text_bottom = H - ACCENT_H - 100
+    text_max_h  = text_bottom - text_top
 
+    _ib = CAROUSEL_TYPO["interview_body"]
     body_font, body_size = _fit_font(
-        draw, "pretendard_bold", text,
+        draw, _ib["font"], text,
         max_width=text_w,
         max_height=text_max_h,
-        start_size=54,
-        min_size=30,
-        line_spacing=22,
+        start_size=_ib["max"],
+        min_size=_ib["min"],
+        line_spacing=_ib["spacing"],
     )
+
+    # 텍스트 블록 높이 계산 → 수직 중앙 배치
+    lines = _wrap_text(draw, text, body_font, text_w)
+    block_h = 0
+    for ln in lines:
+        ln_bbox = draw.textbbox((0, 0), ln, font=body_font)
+        block_h += (ln_bbox[3] - ln_bbox[1]) + _ib["spacing"]
+    text_y = text_top + max(0, (text_max_h - block_h) // 3)
 
     # ── 본문 텍스트 (따옴표 위에 렌더링) ─────────────────────────────────────
     _draw_multiline(
@@ -636,7 +665,7 @@ def render_interview_slide(
         x=text_x, y=text_y,
         max_width=text_w,
         fill=(255, 255, 255, 248),
-        line_spacing=22,
+        line_spacing=_ib["spacing"],
         align="left",
     )
 
@@ -699,7 +728,8 @@ def render_question_slide(
     _draw_team_bar(draw, accent_rgb, position="top", height=12)
 
     # ── 배경 장식: 초대형 반투명 "Q" (우측 하단에 깔리는 레이어) ────────────
-    q_bg_font = _font("bebas_neue", 600)
+    _qb = CAROUSEL_TYPO["q_bg"]
+    q_bg_font = _font(_qb["font"], _qb["size"])
     q_bg_text = "Q"
     q_bg_bbox = draw.textbbox((0, 0), q_bg_text, font=q_bg_font)
     q_bg_w = q_bg_bbox[2] - q_bg_bbox[0]
@@ -712,7 +742,8 @@ def render_question_slide(
     )
 
     # ── 전경: "Q." 마커 (좌측 상단, 선명하게) ──────────────────────────────
-    q_marker_font = _font("bebas_neue", 100)
+    _qm = CAROUSEL_TYPO["q_marker"]
+    q_marker_font = _font(_qm["font"], _qm["size"])
     q_marker_text = "Q."
     q_marker_bbox = draw.textbbox((0, 0), q_marker_text, font=q_marker_font)
     q_marker_h = q_marker_bbox[3] - q_marker_bbox[1]
@@ -737,13 +768,14 @@ def render_question_slide(
     text_w = CONTENT_W
     text_max_h = H - text_top - 200  # 하단 영역 확보
 
+    _qt = CAROUSEL_TYPO["q_text"]
     body_font, body_size = _fit_font(
-        draw, "pretendard_bold", question_text,
+        draw, _qt["font"], question_text,
         max_width=text_w,
         max_height=text_max_h,
-        start_size=44,
-        min_size=32,
-        line_spacing=22,
+        start_size=_qt["max"],
+        min_size=_qt["min"],
+        line_spacing=_qt["spacing"],
     )
 
     # 텍스트 블록 높이를 먼저 계산하여 수직 중앙 보정
@@ -751,7 +783,7 @@ def render_question_slide(
     block_h = 0
     for ln in lines:
         ln_bbox = draw.textbbox((0, 0), ln, font=body_font)
-        block_h += (ln_bbox[3] - ln_bbox[1]) + 22
+        block_h += (ln_bbox[3] - ln_bbox[1]) + _qt["spacing"]
     # 사용 가능한 영역의 수직 중앙
     available_h = H - text_top - 200
     text_y = text_top + max(0, (available_h - block_h) // 3)
@@ -761,13 +793,15 @@ def render_question_slide(
         x=PAD_H, y=text_y,
         max_width=text_w,
         fill=(255, 255, 255, 248),
-        line_spacing=22,
+        line_spacing=_qt["spacing"],
         align="left",
     )
 
     # ── 하단: 드라이버명 + dot 인디케이터 ────────────────────────────────────
+    _qf = CAROUSEL_TYPO["q_footer"]
+    _qfd = CAROUSEL_TYPO["q_footer_dot"]
     footer_y = H - ACCENT_H - 60
-    driver_font = _font("pretendard_medium", 24)
+    driver_font = _font(_qf["font"], _qf["size"])
     draw.text(
         (PAD_H, footer_y),
         driver_kr,
@@ -778,7 +812,7 @@ def render_question_slide(
     # dot 인디케이터 (10장 초과 시 숫자 표기로 전환)
     dot_filled = "\u25cf"
     dot_empty  = "\u25cb"
-    dot_font   = _font("pretendard_regular", 18)
+    dot_font   = _font(_qfd["font"], _qfd["size"])
     body_count = total_pages - 2
     current_body = page_num - 1
     if body_count > 10:
@@ -872,8 +906,10 @@ def render_answer_slide(
     _draw_team_bar(draw, accent_rgb, position="top", height=ACCENT_H)
 
     # ── 상단 헤더: 드라이버명(작게) + dot 페이지 인디케이터 ──────────────────
+    _ah = CAROUSEL_TYPO["a_header"]
+    _ad = CAROUSEL_TYPO["a_dot"]
     header_y    = ACCENT_H + 22
-    driver_font = _font("pretendard_medium", 24)
+    driver_font = _font(_ah["font"], _ah["size"])
     draw.text(
         (PAD_H, header_y),
         driver_kr,
@@ -884,7 +920,7 @@ def render_answer_slide(
     # dot 인디케이터 (10장 초과 시 숫자 표기로 전환)
     dot_filled   = "\u25cf"
     dot_empty    = "\u25cb"
-    dot_font     = _font("pretendard_regular", 18)
+    dot_font     = _font(_ad["font"], _ad["size"])
     body_count   = total_pages - 2
     current_body = page_num - 1
     if body_count > 10:
@@ -918,7 +954,8 @@ def render_answer_slide(
 
     # ── "A." 마커 + 따옴표 장식 ──────────────────────────────────────────────
     # 큰 반투명 따옴표 (배경 장식)
-    quote_deco_font = _font("bebas_neue", 160)
+    _aq = CAROUSEL_TYPO["a_quote"]
+    quote_deco_font = _font(_aq["font"], _aq["size"])
     q_char = "\u201c"
     q_bbox = draw.textbbox((0, 0), q_char, font=quote_deco_font)
     q_w = q_bbox[2] - q_bbox[0]
@@ -933,7 +970,8 @@ def render_answer_slide(
     )
 
     # 작은 "A." 마커 (눈에 보이는 것)
-    a_marker_font = _font("bebas_neue", 48)
+    _am = CAROUSEL_TYPO["a_marker"]
+    a_marker_font = _font(_am["font"], _am["size"])
     a_marker_text = "A."
     a_bbox = draw.textbbox((0, 0), a_marker_text, font=a_marker_font)
     a_h = a_bbox[3] - a_bbox[1]
@@ -946,27 +984,36 @@ def render_answer_slide(
     )
 
     # ── 텍스트 영역 ─────────────────────────────────────────────────────────
-    text_x     = PAD_H
-    text_y     = a_y + a_h + 28
+    text_top   = a_y + a_h + 28
     text_w     = CONTENT_W
-    text_max_h = H - text_y - ACCENT_H - 80
+    text_bottom = H - ACCENT_H - 80
+    text_max_h = text_bottom - text_top
 
+    _at = CAROUSEL_TYPO["a_text"]
     body_font, body_size = _fit_font(
-        draw, "pretendard_medium", answer_text,
+        draw, _at["font"], answer_text,
         max_width=text_w,
         max_height=text_max_h,
-        start_size=36,
-        min_size=26,
-        line_spacing=24,
+        start_size=_at["max"],
+        min_size=_at["min"],
+        line_spacing=_at["spacing"],
     )
+
+    # 텍스트 블록 높이 계산 → 수직 중앙 배치
+    lines = _wrap_text(draw, answer_text, body_font, text_w)
+    block_h = 0
+    for ln in lines:
+        ln_bbox = draw.textbbox((0, 0), ln, font=body_font)
+        block_h += (ln_bbox[3] - ln_bbox[1]) + _at["spacing"]
+    text_y = text_top + max(0, (text_max_h - block_h) // 3)
 
     # ── 본문 텍스트 ─────────────────────────────────────────────────────────
     _draw_multiline(
         draw, answer_text, body_font,
-        x=text_x, y=text_y,
+        x=PAD_H, y=text_y,
         max_width=text_w,
         fill=(255, 255, 255, 240),
-        line_spacing=24,
+        line_spacing=_at["spacing"],
         align="left",
     )
 
@@ -1044,42 +1091,46 @@ def render_source(
     BLOCK_GAP = 28   # 요소 간 간격
 
     # 1) "• SOURCE •" 레이블
-    src_label_font = _font("pretendard_medium", 22)
+    _sl = CAROUSEL_TYPO["source_label"]
+    src_label_font = _font(_sl["font"], _sl["size"])
     src_label      = "\u2022 SOURCE \u2022"
     src_lb_bbox    = draw.textbbox((0, 0), src_label, font=src_label_font)
     src_lb_h       = src_lb_bbox[3] - src_lb_bbox[1]
     src_lb_w       = src_lb_bbox[2] - src_lb_bbox[0]
 
     # 2) 출처 텍스트 Bebas Neue 높이 예측
+    _st = CAROUSEL_TYPO["source_text"]
     src_font, _ = _fit_font(
-        draw, "bebas_neue", source_text,
+        draw, _st["font"], source_text,
         max_width=CONTENT_W,
         max_height=160,
-        start_size=60,
-        min_size=28,
-        line_spacing=8,
+        start_size=_st["max"],
+        min_size=_st["min"],
+        line_spacing=_st["spacing"],
     )
     src_lines = _wrap_text(draw, source_text, src_font, CONTENT_W)
     src_block_h = sum(
         draw.textbbox((0, 0), ln, font=src_font)[3]
-        - draw.textbbox((0, 0), ln, font=src_font)[1] + 8
+        - draw.textbbox((0, 0), ln, font=src_font)[1] + _st["spacing"]
         for ln in src_lines
     )
 
     # 3) GP명 높이 — _fit_font로 자동 크기 조정 (긴 GP명 넘침 방지)
+    _sg = CAROUSEL_TYPO["source_gp"]
     gp_font, _ = _fit_font(
-        draw, "pretendard_bold", gp_name,
+        draw, _sg["font"], gp_name,
         max_width=CONTENT_W,
         max_height=80,
-        start_size=52,
-        min_size=34,
-        line_spacing=8,
+        start_size=_sg["max"],
+        min_size=_sg["min"],
+        line_spacing=_sg["spacing"],
     )
     gp_bbox    = draw.textbbox((0, 0), gp_name, font=gp_font)
     gp_h       = gp_bbox[3] - gp_bbox[1]
 
     # 4) 날짜 높이
-    date_font  = _font("pretendard_regular", 28)
+    _sd = CAROUSEL_TYPO["source_date"]
+    date_font  = _font(_sd["font"], _sd["size"])
     date_bbox  = draw.textbbox((0, 0), date, font=date_font)
     date_h     = date_bbox[3] - date_bbox[1]
 
@@ -1121,7 +1172,7 @@ def render_source(
         x=PAD_H, y=cy,
         max_width=CONTENT_W,
         fill=(255, 255, 255, 230),
-        line_spacing=8,
+        line_spacing=_st["spacing"],
         align="center",
     )
     cy += BLOCK_GAP
@@ -1146,7 +1197,8 @@ def render_source(
     )
 
     # ── 계정 워터마크 (중앙 하단, 바 바로 위) ────────────────────────────────
-    wm_font = _font("pretendard_bold", 30)
+    _sw = CAROUSEL_TYPO["source_watermark"]
+    wm_font = _font(_sw["font"], _sw["size"])
     wm_bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=wm_font)
     wm_w    = wm_bbox[2] - wm_bbox[0]
     wm_h    = wm_bbox[3] - wm_bbox[1]

@@ -117,13 +117,61 @@ LAYOUT = {
 
 # ── 타이포그래피 크기 스케일 (px) ───────────────────────────────────────────
 FONT_SIZE = {
+    # 공통 스케일 (1080×1080 / 1080×1350 공용)
     "display":  80,   # 드라이버명 (Bebas Neue)
-    "headline": 52,   # 메인 카피 (Bebas Neue)
+    "headline": 52,   # 메인 카피 / GP명
     "title":    36,   # 섹션 제목
     "body_lg":  28,   # 서브 카피 (Pretendard Bold)
     "body":     22,   # 본문 (Pretendard Medium)
     "caption":  18,   # 캡션, 인용구 (Pretendard Regular)
     "micro":    14,   # 워터마크 (Pretendard Regular)
+}
+
+# ── 행간 (line_spacing) 토큰 (px) ─────────────────────────────────────────
+# Pillow 렌더링에서 줄 사이 추가 간격 (line-height가 아닌 gap)
+LINE_SPACING = {
+    "tight":    6,    # 드라이버명, 타이트한 헤드라인
+    "normal":   8,    # 인용구, 출처 텍스트
+    "relaxed":  10,   # 메인 카피
+    "loose":    16,   # 커버 요약, 넉넉한 본문
+    "extra":    22,   # Q/A 슬라이드 본문 (가독성 우선)
+    "answer":   24,   # A 슬라이드 본문
+}
+
+# ── 캐러셀 타이포그래피 (슬라이드별 폰트 스펙) ──────────────────────────────
+# 각 키: { font, max, min, spacing } — _fit_font() 파라미터와 1:1 대응
+CAROUSEL_TYPO = {
+    # 커버 슬라이드
+    "cover_driver":    {"font": "pretendard_bold",   "max": 120, "min": 60, "spacing": 6},
+    "cover_summary":   {"font": "pretendard_bold",   "max": 52,  "min": 28, "spacing": 16},
+    "cover_summary_reduced": {"font": "pretendard_bold", "max": 44, "min": 22, "spacing": 14},
+    "cover_gp":        {"font": "pretendard_medium", "size": 26},
+    "cover_swipe":     {"font": "pretendard_medium", "size": 26},
+    "cover_watermark": {"font": "pretendard_regular","size": 22},
+    "cover_number":    {"font": "bebas_neue",        "size": 700},
+    # 인터뷰(기존) 슬라이드
+    "interview_body":    {"font": "pretendard_bold",   "max": 60, "min": 32, "spacing": 22},
+    "interview_header":  {"font": "pretendard_medium", "size": 24},
+    "interview_dot":     {"font": "pretendard_regular","size": 18},
+    "interview_quote":   {"font": "bebas_neue",        "size": 200},
+    # Q 슬라이드
+    "q_bg":            {"font": "bebas_neue",        "size": 600},
+    "q_marker":        {"font": "bebas_neue",        "size": 100},
+    "q_text":          {"font": "pretendard_bold",   "max": 50, "min": 32, "spacing": 22},
+    "q_footer":        {"font": "pretendard_medium", "size": 24},
+    "q_footer_dot":    {"font": "pretendard_regular","size": 18},
+    # A 슬라이드
+    "a_quote":         {"font": "bebas_neue",        "size": 160},
+    "a_marker":        {"font": "bebas_neue",        "size": 48},
+    "a_text":          {"font": "pretendard_medium", "max": 42, "min": 28, "spacing": 22},
+    "a_header":        {"font": "pretendard_medium", "size": 24},
+    "a_dot":           {"font": "pretendard_regular","size": 18},
+    # 출처 슬라이드
+    "source_label":    {"font": "pretendard_medium", "size": 22},
+    "source_text":     {"font": "bebas_neue",        "max": 60, "min": 28, "spacing": 8},
+    "source_gp":       {"font": "pretendard_bold",   "max": 52, "min": 34, "spacing": 8},
+    "source_date":     {"font": "pretendard_regular","size": 28},
+    "source_watermark":{"font": "pretendard_bold",   "size": 30},
 }
 
 # ── 공통 컬러 팔레트 ────────────────────────────────────────────────────────

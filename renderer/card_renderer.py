@@ -38,6 +38,7 @@ from renderer.design_tokens import (
     FONT_SIZE,
     FONTS,
     LAYOUT,
+    LINE_SPACING,
     get_team_color,
     hex_to_rgb,
     hex_to_rgba,
@@ -574,7 +575,7 @@ class CardRenderer:
                 max_height=max_available_h,
                 start_size=start_size,
                 min_size=22,
-                line_spacing=10,
+                line_spacing=LINE_SPACING["relaxed"],
             )
         else:
             font = self._font(font_key, start_size)
@@ -585,7 +586,7 @@ class CardRenderer:
         r, g, b = hex_to_rgb(text_primary)
         return _draw_multiline(
             draw, text, font, margin, y, max_w, (r, g, b),
-            line_spacing=10,
+            line_spacing=LINE_SPACING["relaxed"],
         )
 
     def _draw_quote_box(
@@ -621,7 +622,7 @@ class CardRenderer:
                 max_height=max_available_h - qpad * 2,
                 start_size=caption_size,
                 min_size=12,
-                line_spacing=8,
+                line_spacing=LINE_SPACING["normal"],
             )
         else:
             font = self._font("pretendard_medium", caption_size)
@@ -632,7 +633,7 @@ class CardRenderer:
         # 텍스트 높이 계산
         lines = _wrap_text(draw, quote, font, max_w)
         bbox_sample = draw.textbbox((0, 0), "샘플Ag", font=font)
-        line_h = bbox_sample[3] - bbox_sample[1] + 8
+        line_h = bbox_sample[3] - bbox_sample[1] + LINE_SPACING["normal"]
         text_block_h = line_h * len(lines)
         box_h = text_block_h + qpad * 2
 
@@ -670,7 +671,7 @@ class CardRenderer:
         r, g, b = hex_to_rgb(COLORS["text_secondary"])
         _draw_multiline(
             draw, quote, font, text_x, text_y, max_w, (r, g, b),
-            line_spacing=8,
+            line_spacing=LINE_SPACING["normal"],
         )
 
         return box_y2
@@ -702,7 +703,7 @@ class CardRenderer:
                 max_height=max_available_h,
                 start_size=FONT_SIZE["body"],
                 min_size=14,
-                line_spacing=6,
+                line_spacing=LINE_SPACING["tight"],
             )
         else:
             font = self._font("pretendard_medium", FONT_SIZE["body"])
@@ -713,7 +714,7 @@ class CardRenderer:
         r, g, b = hex_to_rgb(text_secondary)
         return _draw_multiline(
             draw, text, font, margin, start_y, max_w, (r, g, b),
-            line_spacing=6,
+            line_spacing=LINE_SPACING["tight"],
         )
 
     def _draw_gp_label(
