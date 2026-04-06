@@ -12,7 +12,7 @@ import json
 
 # 캐러셀 슬라이드 제한
 MAX_BODY_SLIDES = 17   # 커버(1) + 본문(최대17) + 출처(1) = 19장 이내
-SLIDE_MAX_CHARS = 200  # 슬라이드 1장 권장 최대 글자 수
+SLIDE_MAX_CHARS = 210  # 슬라이드 1장 권장 최대 글자 수 (config.py와 동일)
 
 
 # ─────────────────────────────────────────────
@@ -133,6 +133,11 @@ class CarouselSet:
     slides: List[InterviewSlide] = field(default_factory=list)
 
     # 출처 슬라이드는 렌더러에서 자동 생성 (gp_name_en + date_iso 활용)
+
+    # 핵심 발언 (원카드용)
+    key_quote: str = ""          # 핵심 발언 원문
+    key_quote_context: str = ""  # 맥락 설명 (빈 문자열이면 표시 안 함)
+    key_quote_theme: str = ""    # 테마 태그
 
     # 메타
     total_cost_usd: float = 0.0

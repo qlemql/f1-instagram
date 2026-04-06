@@ -88,8 +88,8 @@ def process(conferences: list[PressConference]) -> list[CarouselBatch]:
 
 
 def render(batches: list[CarouselBatch]) -> list[str]:
-    """캐러셀 이미지 렌더링"""
-    from renderer.carousel_renderer import render_carousel, save_carousel
+    """캐러셀 + 원카드 이미지 렌더링"""
+    from renderer.carousel_renderer import render_carousel, render_quote_card, save_carousel
     from models import DRIVER_TEAM_MAP, get_team_for_driver
     import re
 
@@ -120,6 +120,24 @@ def render(batches: list[CarouselBatch]) -> list[str]:
 
             paths = save_carousel(images, out_dir, prefix=surname)
             all_paths.extend(paths)
+
+            # 원카드 (핵심 발언 카드) 렌더링
+            if carousel.key_quote:
+                quote_img = render_quote_card(
+                    driver_kr=carousel.speaker_kr,
+                    team=carousel.team,
+                    quote=carousel.key_quote,
+                    context=carousel.key_quote_context,
+                    gp_name=carousel.gp_name,
+                    conference_type=carousel.conference_type,
+                )
+                quote_path = f"{out_dir}/{surname}_quote_card.png"
+                quote_img.save(quote_path)
+                all_paths.append(quote_path)
+                logger.info(
+                    f"  → {carousel.speaker_kr}: 원카드 렌더링 완료"
+                )
+
             logger.info(
                 f"  → {carousel.speaker_kr}: {len(paths)}장 렌더링 완료"
             )

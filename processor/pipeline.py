@@ -658,114 +658,6 @@ def _extract_key_quote(
 # 단계 6: 슬라이드 분할 (코드 처리)
 # ──────────────────────────────────────────────
 
-def _split_into_slides(translated_qa: list[dict]) -> list[InterviewSlide]:
-    """
-    번역된 Q&A 목록을 ~180자 슬라이드로 분할한다.
-
-    분할 원칙:
-    1. Q&A 쌍 단위로 먼저 처리
-    2. 질문이 있으면 "Q. {질문}" + 개행 + 답변 형태로 합침
-    3. 합쳐진 텍스트가 _SLIDE_MAX_CHARS 이하면 1장
-    4. 초과 시 textwrap으로 _SLIDE_TARGET_CHARS 단위로 분할
-    5. 슬라이드 번호는 2부터 시작 (1은 커버)
-
-    반환: List[InterviewSlide]
-    """
-    slides: list[InterviewSlide] = []
-    slide_num = 2  # 1은 커버 카드
-
-    for pair in translated_qa:
-        q_ko = pair.get("q_ko", "").strip()
-        a_ko = pair.get("a_ko", "").strip()
-        q_en = pair.get("q_en", "").strip()
-        a_en = pair.get("a_en", "").strip()
-
-        if not a_ko:
-            continue
-
-        # 질문이 있으면 "Q. 질문\n\n답변" 형태로 결합
-        if q_ko:
-            full_text = f"Q. {q_ko}\n\n{a_ko}"
-            full_text_en = f"Q. {q_en}\n\n{a_en}" if q_en else a_en
-        else:
-            full_text = a_ko
-            full_text_en = a_en
-
-        # 길이가 _SLIDE_MAX_CHARS 이하면 1장으로 처리
-        if len(full_text) <= _SLIDE_MAX_CHARS:
-            slides.append(InterviewSlide(
-                slide_num=slide_num,
-                text_kr=full_text,
-                text_en=full_text_en,
-            ))
-            slide_num += 1
-        else:
-            # 질문은 첫 슬라이드에 포함, 답변만 분할
-            if q_ko:
-                header = f"Q. {q_ko}\n\n"
-                answer_text = a_ko
-                answer_text_en = a_en
-            else:
-                header = ""
-                answer_text = a_ko
-                answer_text_en = a_en
-
-            # 답변을 문장 단위로 분할 시도
-            chunks = _split_text_by_sentence(answer_text, _SLIDE_TARGET_CHARS)
-            chunks_en = _split_text_by_sentence(answer_text_en, _SLIDE_TARGET_CHARS) if answer_text_en else [""] * len(chunks)
-
-            for ci, chunk in enumerate(chunks):
-                slide_text = (header + chunk) if ci == 0 else chunk
-                slide_text_en = (f"Q. {q_en}\n\n" + chunks_en[ci] if (ci == 0 and q_en) else chunks_en[ci]) if ci < len(chunks_en) else ""
-                slides.append(InterviewSlide(
-                    slide_num=slide_num,
-                    text_kr=slide_text.strip(),
-                    text_en=slide_text_en.strip(),
-                ))
-                slide_num += 1
-
-    return slides
-
-
-def _split_text_by_sentence(text: str, target_chars: int) -> list[str]:
-    """
-    텍스트를 문장 단위로 묶어 target_chars 이하의 청크로 분할한다.
-    문장 경계: 마침표/느낌표/물음표 뒤 공백 또는 줄바꿈.
-    """
-    # 문장 분리 (한국어 문장 끝: . ! ? 뒤 공백 또는 줄바꿈)
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    if not sentences:
-        return [text]
-
-    chunks = []
-    current = ""
-
-    for sent in sentences:
-        candidate = (current + " " + sent).strip() if current else sent
-        if len(candidate) <= target_chars:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            # 단일 문장이 target_chars 초과 시 강제 분할
-            if len(sent) > target_chars:
-                sub_chunks = _hard_split(sent, target_chars)
-                chunks.extend(sub_chunks[:-1])
-                current = sub_chunks[-1] if sub_chunks else ""
-            else:
-                current = sent
-
-    if current:
-        chunks.append(current)
-
-    return chunks if chunks else [text]
-
-
-def _hard_split(text: str, max_chars: int) -> list[str]:
-    """글자 수 기준 강제 분할 (문장 경계 무시)."""
-    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
-
-
 # ──────────────────────────────────────────────
 # 단계 6-B: Q/A 분리 슬라이드 분할
 # ──────────────────────────────────────────────
@@ -1057,6 +949,17 @@ def _process_driver(
         system_prompt=prompts["cover_summary"],
     )
 
+    # 5-B단계: 핵심 발언 추출
+    key_quote_data = _extract_key_quote(
+        client=client,
+        guard=guard,
+        driver=driver,
+        speaker_ko=speaker_ko,
+        event_label=event_label,
+        translated_qa=translated_qa,
+        system_prompt=prompts.get("key_quote", ""),
+    )
+
     # 6단계: 슬라이드 분할 (Q/A 분리)
     slides = _split_qa_into_slides(translated_qa)
     logger.info("[pipeline] %s: 슬라이드 %d장 생성 (Q/A 분리)", driver, len(slides))
@@ -1081,6 +984,9 @@ def _process_driver(
         date_iso=conference.date_iso,
         cover_headline=headline,
         slides=slides,
+        key_quote=key_quote_data.get("quote", ""),
+        key_quote_context=key_quote_data.get("context", ""),
+        key_quote_theme=key_quote_data.get("theme", ""),
         total_cost_usd=0.0,  # 마지막에 guard.gp_total로 업데이트
     )
 
@@ -1121,6 +1027,7 @@ def run_pipeline(
         "second_pass":        _load_prompt("second_pass"),
         "interview_translate": _load_prompt("interview_translate"),
         "cover_summary":      _load_prompt("cover_summary"),
+        "key_quote":          _load_prompt("key_quote"),
     }
 
     logger.info("[pipeline] 시작: %s (%s)", conference.gp_name, conference.conference_type)
