@@ -172,6 +172,7 @@ class CarouselBatch:
     conference_type: str
     date_iso: str
     carousels: List[CarouselSet] = field(default_factory=list)
+    shared_qa: List[dict] = field(default_factory=list)  # 공동 Q&A [{q, answers: [{speaker, speaker_kr, team, a_ko}]}]
     total_cost_usd: float = 0.0
     created_at: str = field(
         default_factory=lambda: datetime.utcnow().isoformat()

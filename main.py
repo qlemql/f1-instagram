@@ -88,8 +88,8 @@ def process(conferences: list[PressConference]) -> list[CarouselBatch]:
 
 
 def render(batches: list[CarouselBatch]) -> list[str]:
-    """캐러셀 + 원카드 이미지 렌더링"""
-    from renderer.carousel_renderer import render_carousel, render_quote_card, save_carousel
+    """캐러셀 + 원카드 + 공동 Q&A 이미지 렌더링"""
+    from renderer.carousel_renderer import render_carousel, render_quote_card, render_shared_qa_slide, save_carousel
     from models import DRIVER_TEAM_MAP, get_team_for_driver
     import re
 
@@ -141,6 +141,26 @@ def render(batches: list[CarouselBatch]) -> list[str]:
             logger.info(
                 f"  → {carousel.speaker_kr}: {len(paths)}장 렌더링 완료"
             )
+
+        # 공동 Q&A 렌더링
+        if batch.shared_qa:
+            slug = re.sub(r'[^a-z0-9]+', '_', batch.gp_name.lower()).strip('_')
+            shared_dir = f"output/{slug}_{batch.conference_type}/shared"
+            import os
+            os.makedirs(shared_dir, exist_ok=True)
+            for si, sq in enumerate(batch.shared_qa):
+                shared_img = render_shared_qa_slide(
+                    question_ko=sq.get("q_ko", sq.get("q", "")),
+                    answers=sq.get("answers", []),
+                    gp_name=batch.gp_name,
+                )
+                shared_path = f"{shared_dir}/shared_q{si + 1}.png"
+                shared_img.save(shared_path)
+                all_paths.append(shared_path)
+            logger.info(
+                f"  → 공동 Q&A: {len(batch.shared_qa)}장 렌더링 완료"
+            )
+
     return all_paths
 
 

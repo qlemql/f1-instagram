@@ -1216,6 +1216,153 @@ def render_source(
     return img.convert("RGBA")
 
 
+# ── 공동 Q&A 슬라이드 (1080×1350) ──────────────────────────────────────────
+
+def render_shared_qa_slide(
+    question_ko: str,
+    answers: list[dict],
+    gp_name: str = "",
+    page_num: int = 1,
+    total_pages: int = 1,
+) -> Image.Image:
+    """
+    공동 질문 + 다수 드라이버 답변 슬라이드를 렌더링한다.
+
+    Args:
+        question_ko:  한국어 질문 텍스트
+        answers:      [{"speaker_kr": str, "team": str, "a_ko": str}, ...]
+        gp_name:      GP 이름
+        page_num:     현재 페이지
+        total_pages:  전체 페이지
+
+    Returns:
+        PIL.Image (RGBA, 1080×1350)
+    """
+    # 배경: F1 레드 기반 다크
+    f1_red = hex_to_rgb(COLORS["f1_red"])
+    bg_base = darken_color(f1_red, 0.85)
+    top_color = darken_color(bg_base, 0.05)
+    bottom_color = lighten_color(bg_base, 0.08)
+    img = make_vertical_gradient(W, H, top_color, bottom_color).convert("RGBA")
+
+    _draw_noise(img, intensity=45_000)
+
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # 상단 F1 레드 바
+    draw.rectangle([(0, 0), (W, ACCENT_H)], fill=f1_red)
+
+    # ── "공통 질문" 라벨 ──────────────────────────────────────────────────
+    label_font = _font("pretendard_bold", 20)
+    label_text = "공통 질문"
+    label_bbox = draw.textbbox((0, 0), label_text, font=label_font)
+    label_w = label_bbox[2] - label_bbox[0]
+    label_h = label_bbox[3] - label_bbox[1]
+    label_y = ACCENT_H + PAD_V
+    # 라벨 배경 칩
+    chip_pad_x, chip_pad_y = 14, 8
+    draw.rounded_rectangle(
+        [(PAD_H, label_y), (PAD_H + label_w + chip_pad_x * 2, label_y + label_h + chip_pad_y * 2)],
+        radius=4,
+        fill=(*f1_red, 200),
+    )
+    draw.text(
+        (PAD_H + chip_pad_x, label_y + chip_pad_y),
+        label_text, font=label_font, fill=(255, 255, 255, 255),
+    )
+
+    # GP 이름 (라벨 우측)
+    if gp_name:
+        gp_font = _font("pretendard_medium", 20)
+        gp_x = PAD_H + label_w + chip_pad_x * 2 + 16
+        gp_bbox = draw.textbbox((0, 0), gp_name, font=gp_font)
+        gp_th = gp_bbox[3] - gp_bbox[1]
+        gp_y = label_y + (label_h + chip_pad_y * 2 - gp_th) // 2
+        draw.text((gp_x, gp_y), gp_name, font=gp_font, fill=(180, 180, 180, 160))
+
+    # ── 질문 텍스트 ──────────────────────────────────────────────────────
+    q_top = label_y + label_h + chip_pad_y * 2 + 30
+    q_font, _ = _fit_font(
+        draw, "pretendard_bold", question_ko,
+        max_width=CONTENT_W, max_height=160,
+        start_size=36, min_size=24, line_spacing=14,
+    )
+    q_end_y = _draw_multiline(
+        draw, question_ko, q_font,
+        x=PAD_H, y=q_top, max_width=CONTENT_W,
+        fill=(255, 255, 255, 230), line_spacing=14, align="left",
+    )
+
+    # 구분선
+    sep_y = q_end_y + 24
+    draw.line([(PAD_H, sep_y), (PAD_H + CONTENT_W, sep_y)], fill=(*f1_red, 100), width=1)
+
+    # ── 드라이버별 답변 ──────────────────────────────────────────────────
+    answer_y = sep_y + 24
+    answer_bottom = H - ACCENT_H - 60
+    available_h = answer_bottom - answer_y
+    answer_h_per = available_h // max(len(answers), 1)
+
+    for idx, ans in enumerate(answers):
+        speaker_kr = ans.get("speaker_kr", "")
+        team_name = ans.get("team", "")
+        a_ko = ans.get("a_ko", "")
+
+        # 팀 컬러 가져오기
+        try:
+            team_key = _resolve_team_key(team_name)
+            tc = get_team_color(team_key)
+            accent = hex_to_rgb(tc["accent"])
+        except (KeyError, ValueError):
+            accent = f1_red
+
+        block_y = answer_y + idx * answer_h_per
+        block_max_h = answer_h_per - 20
+
+        # 팀 컬러 좌측 바
+        draw.rectangle(
+            [(PAD_H, block_y), (PAD_H + 4, block_y + block_max_h)],
+            fill=(*accent, 180),
+        )
+
+        # 드라이버명
+        name_font = _font("pretendard_bold", 22)
+        draw.text(
+            (PAD_H + 16, block_y),
+            speaker_kr, font=name_font, fill=(*accent, 230),
+        )
+        name_bbox = draw.textbbox((0, 0), speaker_kr, font=name_font)
+        name_h = name_bbox[3] - name_bbox[1]
+
+        # 답변 텍스트
+        text_y = block_y + name_h + 10
+        text_max_h = block_max_h - name_h - 16
+        body_font, _ = _fit_font(
+            draw, "pretendard_medium", a_ko,
+            max_width=CONTENT_W - 20, max_height=text_max_h,
+            start_size=26, min_size=18, line_spacing=12,
+        )
+        _draw_multiline(
+            draw, a_ko, body_font,
+            x=PAD_H + 16, y=text_y, max_width=CONTENT_W - 20,
+            fill=(255, 255, 255, 220), line_spacing=12, align="left",
+        )
+
+    # 워터마크
+    wm_font = _font("pretendard_regular", 18)
+    wm_bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=wm_font)
+    wm_w = wm_bbox[2] - wm_bbox[0]
+    draw.text(
+        (W - PAD_H - wm_w, H - ACCENT_H - 30),
+        WATERMARK_TEXT, font=wm_font, fill=(255, 255, 255, 60),
+    )
+
+    # 하단 바
+    draw.rectangle([(0, H - ACCENT_H), (W, H)], fill=f1_red)
+
+    return img.convert("RGBA")
+
+
 # ── 원카드: 핵심 발언 카드 (1080×1080) ──────────────────────────────────────
 
 _CARD_W = CARD["width"]    # 1080

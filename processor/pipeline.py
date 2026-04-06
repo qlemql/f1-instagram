@@ -213,43 +213,70 @@ def _normalize_conference_speakers(conference: PressConference) -> PressConferen
 # 단계 1: 드라이버별 Q&A 재구성
 # ──────────────────────────────────────────────
 
-def _group_qa_by_driver(conference: PressConference) -> dict[str, list[dict]]:
+def _group_qa_by_driver(
+    conference: PressConference,
+) -> tuple[dict[str, list[dict]], list[dict]]:
     """
-    statements를 드라이버별로 Q&A 쌍으로 재구성한다.
+    statements를 드라이버별 개별 Q&A + 공동 Q&A로 분리한다.
 
-    FIA 기자회견 텍스트에서 질문(is_question=True) 바로 다음에 오는
-    드라이버 답변(is_question=False)을 Q&A 쌍으로 묶는다.
+    공동 질문 판별: 하나의 질문 뒤에 2명 이상의 서로 다른 드라이버가 답변하면 공동 질문.
 
-    반환: {speaker: [{"seq": int, "q": str, "a": str}, ...]}
+    반환:
+        (
+            {speaker: [{"seq": int, "q": str, "a": str}, ...]},  # 개별 Q&A
+            [{"q": str, "answers": [{"speaker": str, "a": str, "seq": int}, ...]}],  # 공동 Q&A
+        )
     """
-    qa_by_driver: dict[str, list[dict]] = {}
-
     stmts = conference.statements
+
+    # 1단계: 질문별 답변 그룹 만들기
+    q_groups: list[dict] = []  # [{"q_idx": int, "q": str, "answers": [...]}]
+
     for i, stmt in enumerate(stmts):
-        if stmt.is_question:
+        if not stmt.is_question:
             continue
-
-        # 이 답변 앞에 있는 가장 가까운 질문 찾기
-        question_text = ""
-        for j in range(i - 1, -1, -1):
+        # 이 질문 뒤의 연속 답변 수집
+        answers = []
+        for j in range(i + 1, len(stmts)):
             if stmts[j].is_question:
-                question_text = stmts[j].text
                 break
-            elif not stmts[j].is_question:
-                # 다른 드라이버의 답변이 먼저 나오면 질문 없이 연속 답변
-                break
+            answers.append({
+                "speaker": stmts[j].speaker,
+                "a": stmts[j].text,
+                "seq": stmts[j].seq,
+            })
+        if answers:
+            q_groups.append({
+                "q_idx": i,
+                "q": stmt.text,
+                "answers": answers,
+            })
 
-        speaker = stmt.speaker
-        if speaker not in qa_by_driver:
-            qa_by_driver[speaker] = []
+    # 2단계: 공동 질문 vs 개별 질문 분류
+    shared_qa: list[dict] = []
+    individual_qa: dict[str, list[dict]] = {}
 
-        qa_by_driver[speaker].append({
-            "seq": stmt.seq,
-            "q": question_text,
-            "a": stmt.text,
-        })
+    for group in q_groups:
+        unique_speakers = list(dict.fromkeys(a["speaker"] for a in group["answers"]))
+        if len(unique_speakers) >= 2:
+            # 공동 질문
+            shared_qa.append({
+                "q": group["q"],
+                "answers": group["answers"],
+            })
+        else:
+            # 개별 질문 — 각 답변을 해당 드라이버에 할당
+            for ans in group["answers"]:
+                speaker = ans["speaker"]
+                if speaker not in individual_qa:
+                    individual_qa[speaker] = []
+                individual_qa[speaker].append({
+                    "seq": ans["seq"],
+                    "q": group["q"],
+                    "a": ans["a"],
+                })
 
-    return qa_by_driver
+    return individual_qa, shared_qa
 
 
 # ──────────────────────────────────────────────
@@ -1036,9 +1063,10 @@ def run_pipeline(
     conference = _normalize_conference_speakers(conference)
     logger.info("[pipeline] 약칭 정규화 완료 (participants: %d명)", len(conference.participants))
 
-    # 단계 1: 드라이버별 Q&A 재구성
-    qa_by_driver = _group_qa_by_driver(conference)
-    logger.info("[pipeline] 드라이버 %d명 Q&A 재구성 완료", len(qa_by_driver))
+    # 단계 1: 드라이버별 Q&A 재구성 + 공동 질문 분리
+    qa_by_driver, shared_qa = _group_qa_by_driver(conference)
+    logger.info("[pipeline] 드라이버 %d명 Q&A 재구성 완료 (공동 질문 %d건)",
+                len(qa_by_driver), len(shared_qa))
 
     if not qa_by_driver:
         logger.warning("[pipeline] 드라이버 발언 없음 — 빈 CarouselBatch 반환")
@@ -1106,10 +1134,68 @@ def run_pipeline(
             carousel.total_cost_usd = round(guard.gp_total - cost_before, 6)
             carousels.append(carousel)
 
+    # ── 공동 Q&A 번역 ───────────────────────────────────────────────────────
+    translated_shared: list[dict] = []
+    if shared_qa:
+        logger.info("[pipeline] 공동 질문 %d건 번역 시작", len(shared_qa))
+        for sq in shared_qa:
+            # 각 답변을 개별 번역 (드라이버명 컨텍스트 유지)
+            translated_answers = []
+            for ans in sq["answers"]:
+                speaker = ans["speaker"]
+                speaker_ko = _get_speaker_ko(speaker)
+                team = get_team_for_speaker(speaker)
+                # 단건 Q&A 번역
+                payload = {
+                    "speaker": speaker,
+                    "speaker_ko": speaker_ko,
+                    "event": event_label,
+                    "qa_pairs": [{"q": sq["q"], "a": ans["a"]}],
+                }
+                raw = _call_api(
+                    client=client,
+                    guard=guard,
+                    model=HAIKU_MODEL,
+                    guard_model=_HAIKU_GUARD,
+                    prompt_stage="interview_translate",
+                    system_prompt=prompts["interview_translate"],
+                    user_message=json.dumps(payload, ensure_ascii=False, indent=2),
+                    max_tokens=1500,
+                    quote_id=f"shared_{speaker}",
+                )
+                if raw:
+                    try:
+                        data = json.loads(_extract_json(raw))
+                        tqa = data.get("translated_qa", [{}])
+                        a_ko = _postprocess_translation(tqa[0].get("a_ko", "")) if tqa else ""
+                        q_ko = _postprocess_translation(tqa[0].get("q_ko", "")) if tqa else ""
+                    except (json.JSONDecodeError, IndexError):
+                        a_ko = ""
+                        q_ko = ""
+                else:
+                    a_ko = ""
+                    q_ko = ""
+
+                translated_answers.append({
+                    "speaker": speaker,
+                    "speaker_kr": speaker_ko,
+                    "team": team or "",
+                    "a_ko": a_ko,
+                })
+
+            # 질문 번역은 첫 번째 답변 번역 시 함께 처리됨
+            translated_shared.append({
+                "q": sq["q"],
+                "q_ko": q_ko if q_ko else sq["q"],
+                "answers": translated_answers,
+            })
+
+        logger.info("[pipeline] 공동 질문 %d건 번역 완료", len(translated_shared))
+
     total_cost = guard.gp_total
     logger.info(
-        "[pipeline] 완료: 드라이버 %d명 처리, 총 비용 $%.5f",
-        len(carousels), total_cost,
+        "[pipeline] 완료: 드라이버 %d명 처리, 공동 질문 %d건, 총 비용 $%.5f",
+        len(carousels), len(translated_shared), total_cost,
     )
 
     return CarouselBatch(
@@ -1117,6 +1203,7 @@ def run_pipeline(
         conference_type=conference.conference_type,
         date_iso=conference.date_iso,
         carousels=carousels,
+        shared_qa=translated_shared,
         total_cost_usd=round(total_cost, 6),
     )
 
