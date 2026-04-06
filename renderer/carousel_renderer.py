@@ -36,6 +36,7 @@ if str(_PROJECT_DIR) not in sys.path:
 
 from renderer.design_tokens import (
     ALPHA,
+    CARD,
     CAROUSEL,
     CAROUSEL_TYPO,
     COLORS,
@@ -1211,6 +1212,192 @@ def render_source(
 
     # ── 하단 팀 컬러 바 ─────────────────────────────────────────────────────
     _draw_team_bar(draw, accent_rgb, position="bottom", height=ACCENT_H)
+
+    return img.convert("RGBA")
+
+
+# ── 원카드: 핵심 발언 카드 (1080×1080) ──────────────────────────────────────
+
+_CARD_W = CARD["width"]    # 1080
+_CARD_H = CARD["height"]   # 1080
+
+def render_quote_card(
+    driver_kr: str,
+    team: str,
+    quote: str,
+    context: str = "",
+    gp_name: str = "",
+    conference_type: str = "",
+) -> Image.Image:
+    """
+    핵심 발언 원카드(1080×1080)를 렌더링한다.
+
+    Args:
+        driver_kr:       드라이버 한글 이름
+        team:            팀 표시명
+        quote:           핵심 발언 원문 (30~80자)
+        context:         맥락 설명 (하단 표시)
+        gp_name:         GP 이름
+        conference_type: 기자회견 종류
+
+    Returns:
+        PIL.Image (RGBA, 1080×1080)
+    """
+    team_key = _resolve_team_key(team)
+    tc = get_team_color(team_key)
+
+    bg_rgb     = hex_to_rgb(tc["bg"])
+    accent_rgb = hex_to_rgb(tc["accent"])
+
+    # ── 배경: 팀 컬러 기반 다크 그라데이션 ──────────────────────────────────
+    top_color    = darken_color(bg_rgb, 0.03)
+    bottom_color = lighten_color(bg_rgb, 0.08)
+    img = make_vertical_gradient(_CARD_W, _CARD_H, top_color, bottom_color).convert("RGBA")
+
+    _draw_noise(img, intensity=50_000)
+
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # ── 상단 팀 컬러 바 ────────────────────────────────────────────────────
+    draw.rectangle([(0, 0), (_CARD_W, ACCENT_H)], fill=accent_rgb)
+
+    # ── 큰 따옴표 장식 (배경 레이어) ───────────────────────────────────────
+    _qd = CAROUSEL_TYPO["quote_card_deco"]
+    deco_font = _font(_qd["font"], _qd["size"])
+    deco_char = "\u201c"
+    deco_bbox = draw.textbbox((0, 0), deco_char, font=deco_font)
+    deco_w = deco_bbox[2] - deco_bbox[0]
+    deco_h = deco_bbox[3] - deco_bbox[1]
+    draw.text(
+        (PAD_H - 16, 120),
+        deco_char,
+        font=deco_font,
+        fill=(*accent_rgb, 35),
+    )
+
+    # ── 핵심 발언 텍스트 (중앙 영역) ──────────────────────────────────────
+    _qt = CAROUSEL_TYPO["quote_card_text"]
+    text_top    = 200
+    text_bottom = _CARD_H - 340
+    text_max_h  = text_bottom - text_top
+
+    body_font, _ = _fit_font(
+        draw, _qt["font"], quote,
+        max_width=CONTENT_W,
+        max_height=text_max_h,
+        start_size=_qt["max"],
+        min_size=_qt["min"],
+        line_spacing=_qt["spacing"],
+    )
+
+    # 텍스트 블록 높이 → 수직 1/3 배치
+    lines = _wrap_text(draw, quote, body_font, CONTENT_W)
+    block_h = 0
+    for ln in lines:
+        ln_bbox = draw.textbbox((0, 0), ln, font=body_font)
+        block_h += (ln_bbox[3] - ln_bbox[1]) + _qt["spacing"]
+    text_y = text_top + max(0, (text_max_h - block_h) // 3)
+
+    _draw_multiline(
+        draw, quote, body_font,
+        x=PAD_H, y=text_y,
+        max_width=CONTENT_W,
+        fill=(255, 255, 255, 245),
+        line_spacing=_qt["spacing"],
+        align="left",
+    )
+
+    # ── 닫는 따옴표 장식 ───────────────────────────────────────────────────
+    close_font = _font(_qd["font"], 120)
+    close_char = "\u201d"
+    close_bbox = draw.textbbox((0, 0), close_char, font=close_font)
+    close_w = close_bbox[2] - close_bbox[0]
+    # 텍스트 블록 끝 우측에 배치
+    draw.text(
+        (_CARD_W - PAD_H - close_w + 8, text_y + block_h - 20),
+        close_char,
+        font=close_font,
+        fill=(*accent_rgb, 60),
+    )
+
+    # ── 구분선 ─────────────────────────────────────────────────────────────
+    sep_y = _CARD_H - 300
+    draw.line(
+        [(PAD_H, sep_y), (PAD_H + 100, sep_y)],
+        fill=(*accent_rgb, 140),
+        width=2,
+    )
+
+    # ── 드라이버명 + 팀명 ──────────────────────────────────────────────────
+    _qdr = CAROUSEL_TYPO["quote_card_driver"]
+    _qtm = CAROUSEL_TYPO["quote_card_team"]
+    driver_font = _font(_qdr["font"], _qdr["size"])
+    team_font   = _font(_qtm["font"], _qtm["size"])
+
+    driver_y = sep_y + 20
+    draw.text(
+        (PAD_H, driver_y),
+        driver_kr,
+        font=driver_font,
+        fill=(255, 255, 255, 240),
+    )
+    driver_bbox = draw.textbbox((0, 0), driver_kr, font=driver_font)
+    driver_w = driver_bbox[2] - driver_bbox[0]
+    # 팀명을 드라이버명 우측에 간격 두고 배치
+    draw.text(
+        (PAD_H + driver_w + 16, driver_y + 4),
+        tc["short_name"],
+        font=team_font,
+        fill=(*accent_rgb, 200),
+    )
+
+    # ── GP 정보 ────────────────────────────────────────────────────────────
+    _qgp = CAROUSEL_TYPO["quote_card_gp"]
+    gp_font = _font(_qgp["font"], _qgp["size"])
+    conf_label = _CONFERENCE_TYPE_KR.get(conference_type, "") if conference_type else ""
+    gp_display = f"{gp_name}  {conf_label}".rstrip() if conf_label else gp_name
+    if gp_display:
+        gp_y = driver_y + 40
+        draw.text(
+            (PAD_H, gp_y),
+            gp_display,
+            font=gp_font,
+            fill=(180, 180, 180, 160),
+        )
+
+    # ── 맥락 설명 (하단) ──────────────────────────────────────────────────
+    if context:
+        _qc = CAROUSEL_TYPO["quote_card_context"]
+        ctx_font = _font(_qc["font"], _qc["size"])
+        ctx_y = _CARD_H - 180
+        # 맥락 텍스트를 2줄 이내로
+        ctx_lines = _wrap_text(draw, context, ctx_font, CONTENT_W)
+        ctx_lines = ctx_lines[:2]  # 최대 2줄
+        for i, ln in enumerate(ctx_lines):
+            ln_bbox = draw.textbbox((0, 0), ln, font=ctx_font)
+            ln_h = ln_bbox[3] - ln_bbox[1]
+            draw.text(
+                (PAD_H, ctx_y + i * (ln_h + 8)),
+                ln,
+                font=ctx_font,
+                fill=(*accent_rgb, 150),
+            )
+
+    # ── 워터마크 (하단 우측) ───────────────────────────────────────────────
+    _qw = CAROUSEL_TYPO["quote_card_watermark"]
+    wm_font = _font(_qw["font"], _qw["size"])
+    wm_bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=wm_font)
+    wm_w = wm_bbox[2] - wm_bbox[0]
+    wm_h = wm_bbox[3] - wm_bbox[1]
+    draw.text(
+        (_CARD_W - PAD_H - wm_w, _CARD_H - ACCENT_H - wm_h - 20),
+        WATERMARK_TEXT,
+        font=wm_font,
+        fill=(255, 255, 255, 70),
+    )
+
+    # ── 하단 팀 컬러 바 ────────────────────────────────────────────────────
+    draw.rectangle([(0, _CARD_H - ACCENT_H), (_CARD_W, _CARD_H)], fill=accent_rgb)
 
     return img.convert("RGBA")
 

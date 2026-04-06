@@ -172,6 +172,14 @@ CAROUSEL_TYPO = {
     "source_gp":       {"font": "pretendard_bold",   "max": 52, "min": 34, "spacing": 8},
     "source_date":     {"font": "pretendard_regular","size": 28},
     "source_watermark":{"font": "pretendard_bold",   "size": 30},
+    # 원카드 (1080×1080 핵심 발언 카드)
+    "quote_card_text":    {"font": "pretendard_bold",   "max": 48, "min": 28, "spacing": 18},
+    "quote_card_deco":    {"font": "bebas_neue",        "size": 240},
+    "quote_card_driver":  {"font": "pretendard_bold",   "size": 28},
+    "quote_card_team":    {"font": "pretendard_medium", "size": 22},
+    "quote_card_context": {"font": "pretendard_regular","size": 18},
+    "quote_card_gp":      {"font": "pretendard_regular","size": 18},
+    "quote_card_watermark":{"font": "pretendard_bold",  "size": 24},
 }
 
 # ── 공통 컬러 팔레트 ────────────────────────────────────────────────────────

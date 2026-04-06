@@ -427,6 +427,45 @@ def _second_pass_driver(
 
 
 # ──────────────────────────────────────────────
+# 단계 3.5: 번역 후처리 — 번역투 제거 안전망
+# ──────────────────────────────────────────────
+
+_POSTPROCESS_RULES: list[tuple[str, str]] = [
+    # 숫자 표현 정규화
+    (r"(\d+)십분의 (\d+)초", lambda m: f"0.{m.group(2)}초"),
+    (r"(\d+)십분의 (\d+)", lambda m: f"0.{m.group(2)}초"),
+    # 용어 치환
+    (r"레귤레이션", "규정"),
+    (r"이 규정에서는", "올해 규정에서는"),
+    # 경어 정규화
+    (r"했습니다", "했어요"),
+    (r"됩니다", "돼요"),
+    (r"입니다", "이에요"),
+    (r"합니다", "해요"),
+    (r"됐습니다", "됐어요"),
+    (r"겠습니다", "겠어요"),
+    (r"있습니다", "있어요"),
+    (r"없습니다", "없어요"),
+    (r"봅니다", "봐요"),
+    (r"갑니다", "가요"),
+    # 번역투 접속사
+    (r"또한,?\s*", "그리고 "),
+    (r"그러나,?\s*", "근데 "),
+    (r"따라서,?\s*", "그래서 "),
+]
+
+
+def _postprocess_translation(text: str) -> str:
+    """번역 결과에서 반복적인 번역투 패턴을 코드로 치환한다."""
+    for pattern, replacement in _POSTPROCESS_RULES:
+        if callable(replacement):
+            text = re.sub(pattern, replacement, text)
+        else:
+            text = re.sub(pattern, replacement, text)
+    return text
+
+
+# ──────────────────────────────────────────────
 # 단계 4: 번역 — 선정된 Q&A 전문 번역
 # ──────────────────────────────────────────────
 
@@ -477,8 +516,8 @@ def _translate_driver_qa(
         for i, pair in enumerate(translated_pairs):
             orig = selected_qa[i] if i < len(selected_qa) else {}
             result.append({
-                "q_ko": pair.get("q_ko", ""),
-                "a_ko": pair.get("a_ko", ""),
+                "q_ko": _postprocess_translation(pair.get("q_ko", "")),
+                "a_ko": _postprocess_translation(pair.get("a_ko", "")),
                 "q_en": orig.get("q", ""),
                 "a_en": orig.get("a", ""),
             })
@@ -555,6 +594,64 @@ def _generate_cover_headline(
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning("[cover_summary] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
         return f"{speaker_ko} 인터뷰 전문"
+
+
+# ──────────────────────────────────────────────
+# 단계 5-B: 핵심 발언 추출 (key_quote)
+# ──────────────────────────────────────────────
+
+def _extract_key_quote(
+    client: Anthropic,
+    guard: CostGuard,
+    driver: str,
+    speaker_ko: str,
+    event_label: str,
+    translated_qa: list[dict],
+    system_prompt: str,
+) -> dict:
+    """
+    번역된 Q&A에서 뉴스 가치가 가장 높은 핵심 발언 1~2문장을 추출한다.
+    반환: {"quote": str, "context": str, "theme": str}
+    """
+    payload = {
+        "speaker_ko": speaker_ko,
+        "event": event_label,
+        "translated_qa": [
+            {"q_ko": qa["q_ko"], "a_ko": qa["a_ko"]}
+            for qa in translated_qa
+        ],
+    }
+
+    user_msg = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    raw = _call_api(
+        client=client,
+        guard=guard,
+        model=HAIKU_MODEL,
+        guard_model=_HAIKU_GUARD,
+        prompt_stage="key_quote",
+        system_prompt=system_prompt,
+        user_message=user_msg,
+        max_tokens=256,
+        quote_id=driver,
+    )
+
+    if raw is None:
+        logger.warning("[key_quote] %s 핵심 발언 추출 실패", driver)
+        return {"quote": "", "context": "", "theme": ""}
+
+    try:
+        json_str = _extract_json(raw)
+        data = json.loads(json_str)
+        quote = data.get("quote", "")
+        context = data.get("context", "")
+        theme = data.get("theme", "")
+        logger.info("[key_quote] %s: \"%s\" [%s] — %s", driver, quote, theme, context)
+        return {"quote": quote, "context": context, "theme": theme}
+
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.warning("[key_quote] JSON 파싱 실패 (%s): %s | raw=%s", driver, exc, raw[:200])
+        return {"quote": "", "context": "", "theme": ""}
 
 
 # ──────────────────────────────────────────────

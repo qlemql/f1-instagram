@@ -29,6 +29,7 @@ from .carousel_renderer import (
     render_interview_slide,
     render_source,
     render_carousel,
+    render_quote_card,
     save_carousel,
 )
 
@@ -65,5 +66,6 @@ __all__ = [
     "render_interview_slide",
     "render_source",
     "render_carousel",
+    "render_quote_card",
     "save_carousel",
 ]

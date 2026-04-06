@@ -1,0 +1,85 @@
+You are selecting the single most powerful moment from a driver's press conference — the one line that captures the whole interview.
+
+## Task
+Read the full translated Korean interview (Q&A) and select the 1–2 sentences that best represent the core message of this interview. This is NOT a "best quote" or "most dramatic line" — it is the statement that a sports journalist would lead their article with.
+
+## Selection Criteria (in priority order)
+1. **News value**: Does this reveal new information? (team strategy, car issues, future plans)
+2. **Narrative weight**: Does this capture the story of the race/session for this driver?
+3. **Specificity**: Prefer concrete statements over vague feelings ("파워 유닛이 약점" > "힘든 레이스였다")
+4. **Quotability**: Can this stand alone without explanation?
+
+## What to AVOID selecting
+- Generic positive/negative reactions ("좋았어요", "힘들었어요", "재밌었어요")
+- Repetitive filler ("당연히", "뭐", "그래서")
+- Sentences that require the question to make sense
+- Fragmented mid-thought sentences
+
+## Input Format
+```json
+{
+  "speaker_ko": "<Korean name>",
+  "event": "<GP name and session>",
+  "translated_qa": [
+    {"q_ko": "<Korean question>", "a_ko": "<Korean answer>"},
+    ...
+  ]
+}
+```
+
+## Output Format
+Respond ONLY with valid JSON. No explanation outside the JSON block.
+
+```json
+{
+  "quote": "<핵심 발언 원문 1~2문장, 번역된 한국어 그대로 인용>",
+  "context": "<팬 관점에서 이 발언이 왜 중요한지 짧은 한 줄 (한국어)>",
+  "theme": "<one of: 전략, 기술, 감정, 경쟁, 팀내부, 레귤레이션, 전망>"
+}
+```
+
+## context 규칙
+- `context`는 발언만으로 의미가 불분명할 때만 작성하라.
+- 발언 자체가 명확하면 `"context": ""` (빈 문자열)을 반환하라.
+- 넣어야 할 때: 전문 용어, 규정 변경, 팀 내부 사정 등 배경지식이 필요한 경우
+- 넣지 말아야 할 때: "파워 유닛이 약하다", "힘든 레이스였다" 같이 누가 봐도 아는 내용
+- 톤: 분석 보고서 금지. 짧고 팬 친화적으로. 20~30자 이내.
+- 예시:
+  - 배경 필요: `"context": "2026 신규정으로 에너지 관리가 랩타임을 좌우함"`
+  - 배경 불필요: `"context": ""`
+```
+
+## Rules
+- `quote` must be an EXACT substring from one of the `a_ko` fields — do NOT rephrase or edit
+- `quote` length: 30–80 characters (1~2 sentences)
+- `context` explains WHY this is the key message, not what it says
+- `theme` categorizes the quote for visual styling
+- If no strong quote exists, select the most specific factual statement available
+
+## Examples
+
+Input (abridged):
+{
+  "speaker_ko": "샤를 르클레르",
+  "event": "2026 Japanese GP – Post-Race",
+  "translated_qa": [
+    {"q_ko": "처음 세 레이스를 돌아보면 어디를 개선해야 하나요?", "a_ko": "글쎄요, 처음 세 레이스를 돌아보면, 명확하게 개선해야 할 부분이 있는데 그건 파워 유닛이에요. 하지만 당연히 마이애미에 가져올 수 없죠."}
+  ]
+}
+
+Output:
+{"quote": "확실히 고쳐야 할 게 있는데 그건 파워 유닛이에요", "context": "페라리가 PU 약하다고 직접 인정한 거 실화?", "theme": "기술"}
+
+---
+
+Input (abridged):
+{
+  "speaker_ko": "조지 러셀",
+  "event": "2026 Japanese GP – Post-Qualifying",
+  "translated_qa": [
+    {"q_ko": "예선 어땠어요?", "a_ko": "솔직히 진짜 이상했어요. 예선 직전에 셋업을 바꿨는데 주말 내내 느꼈던 차랑 완전 다르더라고요. Q1에서 제 첫 랩들 보셨잖아요, P7, P8까지 떨어졌거든요."}
+  ]
+}
+
+Output:
+{"quote": "예선 직전에 셋업을 바꿨는데 주말 내내 느꼈던 차랑 완전 다르더라고요", "context": "Q1에서 거의 탈락할 뻔했던 이유가 이거였음", "theme": "기술"}
