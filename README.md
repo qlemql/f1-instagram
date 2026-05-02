@@ -1,11 +1,12 @@
 # F1 Instagram — Press Conference Card-News Automation
 
+**English** · [한국어](README.ko.md)
+
 > Automated pipeline that turns F1 press conferences into Korean Instagram carousels, running on a strict $10/month Claude API budget.
 
 🇰🇷 Target: Korean F1 fans  
 💰 Budget: $10/month total Claude API spend (hard cap)  
 ⚙️ Runtime: GitHub Actions (free tier)
-
 
 ---
 
